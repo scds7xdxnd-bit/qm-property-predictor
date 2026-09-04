@@ -13,3 +13,16 @@ tqdm>=4.66
 joblib>=1.3
 pytest>=8.0
 gradio>=6.0
+
+# Ch 4 stretch goal only (scripts/08_gnn.py). The GNN is written in plain
+# torch -- no torch-geometric -- so this is the only extra dependency, and
+# everything else runs without it.
+torch>=2.2
+
+# Ch 2 chemical-space plot only (scripts/02b_chemspace.py). If it is
+# missing the script falls back to t-SNE alone rather than failing.
+umap-learn>=0.5
+
+# Ch 7, optional. Without it render_llm() returns None and the
+# deterministic explanation is still the real answer.
+anthropic>=0.40

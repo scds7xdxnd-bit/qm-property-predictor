@@ -1,14 +1,18 @@
-.PHONY: help setup data features qm train ablation app test clean
+.PHONY: help setup data features chemspace theory qm train gnn ablation explain app test all clean
 
 help:
-	@echo "make setup     conda env from environment.yml"
-	@echo "make data      download + clean ESOL          (~10 s)"
-	@echo "make features  descriptors + fingerprints     (~30 s)"
-	@echo "make qm        B3LYP/6-31G* on the subset     (slow: minutes to hours)"
-	@echo "make train     Ch3 vs Ch4 baselines           (~2 min)"
-	@echo "make ablation  does QM help?                  (~3 min, needs qm)"
-	@echo "make app       launch the Gradio predictor"
-	@echo "make test      pytest"
+	@echo "Ch 2  make data       download + clean ESOL             (~10 s)"
+	@echo "Ch 2  make chemspace  t-SNE/UMAP + cross-source noise   (~2 min)"
+	@echo "Ch 1  make features   descriptors + fingerprints        (~30 s)"
+	@echo "Ch 5  make theory     box/oscillator solvers, polyenes  (~20 s)"
+	@echo "Ch 6  make qm         B3LYP/6-31G* on the subset        (SLOW: hours)"
+	@echo "Ch 3  make train      ridge / RF / XGBoost baselines    (~2 min)"
+	@echo "Ch 4  make gnn        message-passing GNN               (~10 min)"
+	@echo "Ch 6  make ablation   does QM actually help?            (needs qm)"
+	@echo "Ch 7  make explain Q='caffeine'   explained prediction"
+	@echo "      make app        launch the Gradio predictor"
+	@echo "      make test       pytest"
+	@echo "      make all        everything except qm and ablation"
 
 setup:
 	conda env create -f environment.yml
@@ -19,20 +23,40 @@ data:
 features: data
 	python scripts/02_featurize.py
 
+chemspace: data
+	python scripts/02b_chemspace.py
+
+theory:
+	python scripts/06_theory.py
+
+# Parallel across molecules, one thread each. Tune --workers to your box:
+# more is not always faster, and on a memory-tight machine it is slower.
 qm: data
 	python scripts/03_run_qm.py
 
 train: features
 	python scripts/04_train.py
 
+gnn: features
+	python scripts/08_gnn.py
+
 ablation: features
 	python scripts/05_ablation.py
+
+Q ?= caffeine
+explain: features
+	python scripts/07_explain.py "$(Q)"
 
 app:
 	python app/app.py
 
 test:
 	pytest -q tests/
+
+all: data features chemspace theory train gnn
+	@echo
+	@echo "Done. The one thing left is the expensive arm:"
+	@echo "  make qm && make ablation"
 
 clean:
 	rm -rf results/*.json results/figures/*.png

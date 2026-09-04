@@ -19,16 +19,17 @@ a project across all seven chapters of *파이썬을 이용한 화학 인공지�
 | Book chapter | Where it lives |
 |---|---|
 | Ch 1 — RDKit, descriptors, fingerprints, Tanimoto | `src/qmprop/features.py`, `data.py` |
-| Ch 2 — chemical space, data assembly | `src/qmprop/data.py`, notebook §1 |
+| Ch 2 — chemical space, data assembly | `src/qmprop/data.py`, `external.py`, `scripts/02b_chemspace.py` |
 | Ch 3 — ridge → lasso → RF → SVM → XGBoost | `src/qmprop/models.py`, `scripts/04_train.py` |
-| Ch 4 — neural network, benchmarked honestly against Ch 3 | `models.py` (`mlp`) |
-| Ch 5 — quantum theory | `src/qmprop/qm.py` docstrings; the solvers are yours to write |
+| Ch 4 — neural network **and a graph network** vs Ch 3 | `models.py` (`mlp`), `src/qmprop/gnn.py`, `scripts/08_gnn.py` |
+| Ch 5 — quantum theory, solved from scratch | `src/qmprop/theory.py`, `scripts/06_theory.py` |
 | Ch 6 — driving QC software from Python | `src/qmprop/qm.py`, `scripts/03_run_qm.py` |
-| Ch 7 — LLM layer | `app/app.py` (extension point — see below) |
+| Ch 7 — name → structure → prediction → explanation | `src/qmprop/explain.py`, `scripts/07_explain.py`, `app/app.py` |
 
-Two additions the book does not cover, both load-bearing:
-**scaffold splitting** (`src/qmprop/splits.py`) and the
-**applicability-domain check** in the app.
+Three additions the book does not cover, all load-bearing:
+**scaffold splitting** (`src/qmprop/splits.py`), the
+**applicability-domain check** in the app, and a **measured noise floor**
+from an independent curation (below).
 
 ---
 
@@ -52,12 +53,24 @@ PySCF in particular is happier from conda-forge.
 ```bash
 make data       # download ESOL, canonicalize, dedupe        ~10 s
 make features   # 2048-bit ECFP4 + ~200 descriptors          ~30 s
+make chemspace  # t-SNE/UMAP + cross-source noise floor      ~2 min
+make theory     # Ch 5 solvers, and where they break         ~20 s
 make train      # Ch 3 baselines vs the Ch 4 network         ~2 min
+make gnn        # Ch 4 stretch: message-passing GNN          ~10 min
 make qm         # B3LYP/6-31G* single points                 SLOW
 make ablation   # the actual question                        ~3 min
+make explain Q='caffeine'   # Ch 7, explained prediction
 make app        # Gradio predictor
-make test       # pytest
+make test       # pytest (76 tests)
+make all        # everything except qm and ablation
 ```
+
+`make qm` picks its worker count from **RAM, not cores** — roughly 2 GB
+per worker with 2 GB reserved for the OS. That is not fussiness: seven
+workers on an 8 GB machine drove it into swap, worker CPU collapsed to
+~28% each while `kernel_task` burned a full core on memory compression,
+and throughput was *worse* than with three. Override with `--workers N`
+if you know your box.
 
 **Smoke-test the QM step before committing to it:**
 
@@ -81,10 +94,11 @@ Actually run, not estimated. ESOL, 1117 molecules after deduplication
 |---|---|---|---|
 | XGBoost | **0.900** (R² 0.808) | 0.595 (R² 0.926) | **+51%** |
 | Random forest | 0.909 (R² 0.804) | 0.621 (R² 0.920) | +46% |
+| GNN (message-passing) | 1.021 (R² 0.753) | — | — |
 | Ridge (RidgeCV) | 1.072 (R² 0.728) | 1.145 (R² 0.728) | — |
 | MLP | 1.311 (R² 0.593) | 0.924 (R² 0.823) | +42% |
 
-Two things fall out of this table.
+Three things fall out of this table.
 
 **The random split inflates scores by roughly half an RMSE unit.** If you
 read a solubility paper reporting ~0.6 RMSE on ESOL without saying how it
@@ -96,11 +110,128 @@ up but does not close. At ~1100 molecules there is not enough data for the
 network to earn its capacity. This is the single most useful thing to
 know before spending a week on Ch 4.
 
+**The graph network does not rescue it.** A from-scratch message-passing
+GNN (`src/qmprop/gnn.py`, ~80 lines of torch, no torch-geometric) reaches
+1.021 — better than the MLP and ridge, still 0.12 behind plain XGBoost on
+fingerprints. At 114,721 parameters for 759 training molecules that is
+**151 parameters per molecule**, and no amount of architecture fixes that
+ratio. Graph networks start winning around 10⁵ molecules; below that the
+inductive bias does not pay for the capacity. Running it was still worth
+it — a null result you measured is worth more than one you assumed.
+
 A footnote on the ridge row: with a fixed `alpha=1.0` it scored RMSE 2.141
 and **R² −0.087** — worse than predicting the mean. At 2247 features on
 893 samples a fixed penalty is badly under-regularized. `models.py` uses
 `RidgeCV`/`LassoCV`/`ElasticNetCV` so the linear arm is a real baseline
 rather than a strawman.
+
+---
+
+## How good could any model get? (Ch 2)
+
+`make chemspace` joins ESOL against **AqSolDB** (9,982 compounds, nine
+merged sources) on InChIKey and asks what two independent curations of
+the same property say about the same molecule.
+
+| subset | n | RMSE | MAE | max |
+|---|---:|---:|---:|---:|
+| all shared molecules | 1117 | 0.262 | 0.087 | 2.97 |
+| AqSolDB had >1 source | 668 | **0.339** | 0.144 | 2.97 |
+
+ESOL is *one of* AqSolDB's nine sources, so both rows are partly
+self-comparison and 0.34 is a **lower bound** on experimental noise, not
+an estimate of it. Even so it is the number that matters: the best model
+here sits at 0.90 RMSE, comfortably above the floor, so there is real
+signal left to capture rather than curation error to overfit. The largest
+single disagreement is octadecanol, where the two sources differ by
+**2.97 log units** — a factor of ~900 in concentration.
+
+The same script measures how far the test set sits from training:
+
+| split | mean nearest Tanimoto | % below 0.4 |
+|---|---:|---:|
+| scaffold | 0.393 | **57%** |
+| random | 0.546 | 21% |
+
+That gap *is* the +51% RMSE inflation, made concrete. And it is worth
+sitting with the second column: 0.4 is the threshold the deployed app
+uses to warn that a prediction is out of domain, so **57% of the honest
+test set consists of molecules the app itself would flag**. The headline
+RMSE is largely measured on exactly those cases — which is the point of
+the honest split, not a flaw in it.
+
+---
+
+## Ch 5: the theory layer, and where it breaks
+
+`make theory` solves the two solvable problems three ways. A
+finite-difference solver that knows no chemistry (build `H = T + V`,
+call `eigh`) reproduces the closed-form energies to **5×10⁻⁶ relative
+error** for the particle in a box and **3×10⁻⁵** for the harmonic
+oscillator. That agreement is what licenses trusting the same two steps
+in Ch 6, where PySCF does them in a Gaussian basis instead of on a grid.
+
+Then the free-electron model predicts polyene π→π* gaps from one number,
+the C–C bond length:
+
+| chain | FEM | experiment | error |
+|---|---:|---:|---:|
+| butadiene (C₄) | 6.00 | 5.92 | **+0.08** |
+| hexatriene (C₆) | 3.73 | 4.93 | −1.20 |
+| octatetraene (C₈) | 2.70 | 4.41 | −1.71 |
+| decapentaene (C₁₀) | 2.11 | 4.02 | −1.91 |
+
+Butadiene looks like a triumph, which is exactly why textbooks stop
+there. Extend the series and the model falls apart, and worse, it sends
+the gap to **zero** as the chain grows (0.24 eV at 80 carbons) while real
+polyenes converge to roughly 2 eV. The missing physics is bond-length
+alternation — a real chain is a corrugated box, not a flat one, and the
+corrugation holds a gap open at any length.
+
+The lesson travels: **a model agreeing with one data point is not
+evidence, it is a coincidence you have not tested yet.** `test_theory.py`
+pins the breakdown so nobody quietly "fixes" it into silence.
+
+---
+
+## Ch 7: predictions that show their work
+
+```bash
+make explain Q='caffeine'
+```
+
+```
+Resolved caffeine via pubchem to Cn1c(=O)c2c(ncn2C)n(C)c1=O
+### Predicted log S: -0.91 log(mol/L)  (~24,038 mg/L)
+This molecule is in the training set; measured -0.88 — a memory check.
+
+| similarity | measured log S | SMILES                             |
+|       1.00 |          -0.88 | Cn1c(=O)c2c(ncn2C)n(C)c1=O         |
+|       0.53 |          -2.52 | Cn1cnc2c1c(=O)[nH]c(=O)n2C         |
+
+What moved this prediction (exact TreeSHAP, baseline -2.86):
+| octanol/water partition (lipophilicity) | -1.03 | +1.83 |
+| molecular complexity                    |   617 | -0.40 |
+```
+
+Four properties, in order of how much they matter:
+
+1. **The LLM is optional and last.** `render_text()` produces the entire
+   explanation deterministically from computed numbers. `render_llm()`
+   only rephrases them, and only if `ANTHROPIC_API_KEY` is set. The
+   language model never originates a quantity — that is the difference
+   between an explanation and a plausible-sounding one.
+2. **The attribution is arithmetic, not narrative.** XGBoost's
+   `pred_contribs` is exact TreeSHAP; contributions plus bias reproduce
+   `model.predict` to ~10⁻⁶ (asserted in `test_explain.py`). A random
+   forest gets *no* attribution rather than a substituted global
+   importance, which answers a different question.
+3. **The table says it is a summary.** A typical prediction has ~880
+   non-zero contributions; showing six and implying they sum to the
+   answer would be a lie of omission, so the output states the coverage.
+4. **Out-of-domain is loud.** `table salt` resolves to `[Cl-].[Na+]`,
+   scores 0.10 Tanimoto against training, and is flagged — an ionic solid
+   is exactly the chemistry this model has never seen.
 
 ---
 
@@ -181,15 +312,15 @@ factor, not by 2%.
 
 ## Extension points
 
-**Ch 4 → graph neural networks.** `build_model()` is the only function
-that needs to change. Fingerprints throw away connectivity a GNN keeps.
+**A bigger dataset.** AqSolDB (~10k molecules) is already downloaded by
+`make chemspace`; retargeting the pipeline at it is a config change plus
+a column rename, and it is the change most likely to move the GNN result.
 
-**Ch 7 → an agent layer.** The modern version of the ChatGPT chapter is
-not "ask a model a question" but giving an LLM `qm_descriptors()` and
-`predict()` as tools, so it resolves a name to SMILES, runs the pipeline,
-and explains the answer using the nearest-neighbor table. Validate every
-SMILES it produces through `Chem.MolFromSmiles()` first — `None` means
-the molecule was never real.
+**An agent layer.** `explain.py` gives an LLM the facts; the next step is
+giving it `qm_descriptors()` and `predict()` as *tools* so it can decide
+what to compute. Keep the current invariant — validate every SMILES it
+produces through `Chem.MolFromSmiles()`, and never let it originate a
+number.
 
 **Better QM.** Geometry optimization instead of single points; a
 conformer ensemble; ωB97X-D for dispersion.
@@ -202,15 +333,28 @@ conformer ensemble; ωB97X-D for dispersion.
 config.yaml           every knob, one file
 src/qmprop/
   data.py             download, canonicalize, dedupe by InChIKey
+  external.py         AqSolDB, PubChem, ChEMBL  (Ch 2, and Ch 7's front door)
   features.py         descriptors + ECFP, assembled into blocks
   splits.py           scaffold split (the correction that matters)
-  qm.py               RDKit geometry -> PySCF -> 8 QM features
+  theory.py           box + oscillator, analytic and numerical  (Ch 5)
+  qm.py               RDKit geometry -> PySCF -> 8 QM features  (Ch 6)
+  gnn.py              message-passing network, plain torch      (Ch 4)
   models.py           ridge/lasso/SVR/RF/XGBoost/MLP registry
+  explain.py          resolve -> predict -> TreeSHAP -> prose    (Ch 7)
   evaluate.py         metrics, parity plots, text tables
-scripts/01..05        the pipeline, in order
+scripts/
+  01_fetch_data.py    ESOL download + clean
+  02_featurize.py     descriptors + fingerprints
+  02b_chemspace.py    t-SNE/UMAP, noise floor, split separation
+  03_run_qm.py        B3LYP single points, parallel + resumable
+  04_train.py         Ch 3 vs Ch 4 baselines
+  05_ablation.py      does QM help?
+  06_theory.py        Ch 5 solvers and the polyene breakdown
+  07_explain.py       Ch 7 CLI
+  08_gnn.py           Ch 4 stretch goal
 notebooks/            Colab quickstart
-app/app.py            Gradio predictor with applicability-domain warning
-tests/                pytest — splits and features
+app/app.py            Gradio predictor, name lookup + explanation
+tests/                pytest — 76 tests
 ```
 
 ## Data

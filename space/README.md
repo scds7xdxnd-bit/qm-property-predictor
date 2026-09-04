@@ -13,19 +13,42 @@ license: mit
 
 # Aqueous solubility predictor
 
-Random forest on ECFP4 fingerprints + RDKit descriptors, trained on the
+XGBoost on ECFP4 fingerprints + RDKit descriptors, trained on the
 **scaffold-split** training half of ESOL/Delaney (1117 molecules after
 deduplication).
 
-Enter a SMILES string; you get a predicted log S (mol/L), the structure,
-and the five nearest training molecules by Tanimoto similarity.
+Type a **name** (`caffeine`, `aspirin`, `table salt`) or a **SMILES**
+string. You get a predicted log S (mol/L), the structure, the five
+nearest training molecules with their *measured* values, and the
+features that moved this particular prediction.
 
-## Why the neighbor table is the important part
+## The number is the least interesting part
 
-A prediction for a molecule unlike anything in training is extrapolation
-dressed up as a number. This app names that: below 0.4 maximum Tanimoto
-to any training molecule, it labels the result as outside the
-applicability domain instead of returning a confident-looking value.
+Three things travel with every prediction:
+
+**Nearest neighbours, with measurements.** These are real data points you
+can check the answer against. If the neighbours look nothing like your
+molecule, the prediction is not trustworthy however confident it looks.
+
+**Exact attribution.** The feature table is XGBoost's `pred_contribs` —
+exact TreeSHAP, where contributions plus bias reproduce the prediction to
+~10⁻⁶. It is arithmetic, not a story told alongside the model. A typical
+prediction has several hundred non-zero contributions, so the table shows
+the largest few and says so rather than implying it is the whole sum.
+
+**A domain warning.** Below 0.4 maximum Tanimoto to anything in training,
+the result is labelled extrapolation instead of being returned as a
+confident-looking value. Try `table salt` — an ionic solid is exactly the
+chemistry this model has never seen.
+
+## How good is 0.90 RMSE?
+
+Better than it sounds. Two independent curations of aqueous solubility
+(ESOL and AqSolDB) disagree with each other by ~0.34 log units RMSE on
+the same molecules, so that is roughly the floor — not zero. And 57% of
+the scaffold-split test set sits below the 0.4 Tanimoto line this app
+warns about, meaning the headline score is largely earned on the hard
+cases rather than on near-duplicates.
 
 ## Why scaffold splitting
 
@@ -42,7 +65,8 @@ LUMO, dipole, Mulliken charges via PySCF) improve property prediction
 once fingerprints and cheap descriptors are already in hand.
 
 The Space runs the cheap half only — no PySCF, since a DFT calculation
-does not belong behind a web request.
+does not belong behind a web request. Name resolution calls out to
+PubChem, falling back to ChEMBL.
 
 ## Data
 

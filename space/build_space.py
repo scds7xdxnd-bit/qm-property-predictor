@@ -22,7 +22,8 @@ SPACE = Path(__file__).resolve().parent
 BUILD = SPACE / "build"
 
 MODULES = ["__init__.py", "config.py", "data.py", "features.py",
-           "splits.py", "models.py", "evaluate.py", "qm.py"]
+           "splits.py", "models.py", "evaluate.py", "qm.py",
+           "explain.py", "external.py"]
 
 
 def main() -> None:
