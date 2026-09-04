@@ -19,4 +19,4 @@ dependencies:
   - jupyterlab
   - pip
   - pip:
-      - gradio>=4.44
+      - gradio>=6.0
