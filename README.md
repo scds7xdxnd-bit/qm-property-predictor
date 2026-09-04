@@ -253,23 +253,44 @@ mean anything. Comparing a QM arm on 180 small molecules against a
 fingerprint arm on all 1117 measures the subset, not the features — and
 that mistake is common enough in published work to be worth naming.
 
-`05_ablation.py` prints the per-model RMSE delta and, next to it, the
-noise floor for that test-set size. **A delta smaller than the noise
-floor is "no measurable effect", not a win.** Report it that way.
+Two more decisions carry as much weight as that one.
 
-### What to expect
+**Scaffold k-fold, not a single split.** An 80/20 split of a
+200-molecule subset leaves ~40 test molecules, which cannot resolve the
+effect being looked for — the experiment would have been underpowered by
+construction, and a null result from it would have meant nothing.
+`scaffold_kfold` rotates every molecule through the test set once, so
+the comparison runs on 200 out-of-fold predictions instead of 40.
+Scaffold groups stay whole, so each fold is still an honest test, and
+the extra cost is four more model fits per arm — seconds. The QM cost,
+which is the expensive part, does not change at all.
 
-The QM arm has not been run at scale yet — that is the open question and
-the reason the project exists. Plausible outcomes:
+**A paired significance test.** An earlier version quoted
+`1.96·σ_y/√n` as the noise floor. That is the confidence interval for
+the *mean of y* — a different quantity, and far too wide here: two
+models scored on the same molecules make correlated errors, so the
+interval on their *difference* is much narrower. Using it would have
+buried a real effect. The delta is now bootstrapped by resampling
+molecules and recomputing both arms' RMSE on each resample, and the
+script reports the CI width so a null result comes with the size of the
+effect it could not have detected.
 
-- **QM adds little.** Likely for solubility — it is dominated by polarity
-  and H-bonding, which TPSA and LogP already capture. A null result here
-  is a real finding, and worth writing up.
+### How to read the result
+
+Three outcomes, and what each would mean:
+
+- **QM adds little.** The most likely one for solubility — it is
+  dominated by polarity and H-bonding, which TPSA and LogP already
+  encode. A null result here is a real finding, not a failed experiment,
+  provided it is reported with the CI width that says how small an
+  effect could still be hiding.
 - **QM helps the linear models but not the trees.** Would suggest the
-  trees were already extracting equivalent information from structure.
-- **QM helps everything.** Would be the interesting case; check first
-  that molecule size did not leak in as a confound, since both QM cost
-  and solubility correlate with it.
+  trees were already extracting equivalent information from structure,
+  and the quantum features are a more convenient encoding rather than
+  new information.
+- **QM helps everything.** The interesting case, and the one to distrust
+  first: molecule size correlates with both QM cost and solubility, so
+  check that size did not enter as a confound before believing it.
 
 Swap the target to something more electronic — HOMO–LUMO gap prediction,
 redox potentials, reaction barriers — and the QM arm should look much
