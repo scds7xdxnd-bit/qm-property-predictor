@@ -19,3 +19,6 @@ results/figures/*
 *.chk
 tmp*/
 .DS_Store
+
+# Hugging Face Space build output (regenerate with space/build_space.py)
+space/build/
