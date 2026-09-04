@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import gradio as gr
 import numpy as np
 import pandas as pd
 from rdkit import Chem, DataStructs
@@ -117,9 +118,14 @@ def predict(smiles: str):
     return Draw.MolToImage(mol, size=(340, 260)), "\n".join(lines), neighbors
 
 
-def main() -> None:
-    import gradio as gr
+def build_ui() -> "gr.Blocks":
+    """Construct the interface.
 
+    `demo` MUST exist at module scope: a Hugging Face Space imports this
+    file and looks for a module-level Blocks object. Building it inside
+    a function leaves nothing for the runner to serve, and the container
+    starts, reports a local URL, then exits.
+    """
     with gr.Blocks(title="Solubility predictor") as demo:
         gr.Markdown(
             "# Aqueous solubility predictor\n"
@@ -136,10 +142,10 @@ def main() -> None:
                 )
                 gr.Examples(
                     examples=[
-                        ["CC(=O)Oc1ccccc1C(=O)O"],   # aspirin
-                        ["CCO"],                      # ethanol
-                        ["c1ccc2cc3ccccc3cc2c1"],     # anthracene
-                        ["CN1C=NC2=C1C(=O)N(C)C(=O)N2C"],  # caffeine
+                        ["CC(=O)Oc1ccccc1C(=O)O"],          # aspirin
+                        ["CCO"],                             # ethanol
+                        ["c1ccc2cc3ccccc3cc2c1"],            # anthracene
+                        ["CN1C=NC2=C1C(=O)N(C)C(=O)N2C"],    # caffeine
                     ],
                     inputs=smiles_in,
                 )
@@ -147,15 +153,16 @@ def main() -> None:
                 result = gr.Markdown()
             with gr.Column(scale=1):
                 image = gr.Image(label="Structure", height=260)
-        neighbors = gr.Dataframe(
-            label="Nearest training molecules", wrap=True,
-        )
+        neighbors = gr.Dataframe(label="Nearest training molecules", wrap=True)
 
         go.click(predict, smiles_in, [image, result, neighbors])
         smiles_in.submit(predict, smiles_in, [image, result, neighbors])
 
-    demo.launch()
+    return demo
+
+
+demo = build_ui()
 
 
 if __name__ == "__main__":
-    main()
+    demo.launch()
