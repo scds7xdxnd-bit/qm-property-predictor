@@ -71,6 +71,11 @@ def main() -> None:
         "PROJECT_ROOT = Path(__file__).resolve().parents[1]",
     ))
 
+    # Testing the build locally leaves __pycache__ behind; bytecode from
+    # this machine's interpreter is useless (and wrong) on the Space's.
+    for pc in BUILD.rglob("__pycache__"):
+        shutil.rmtree(pc, ignore_errors=True)
+
     size = sum(f.stat().st_size for f in BUILD.rglob("*") if f.is_file())
     print(f"\nbuilt {BUILD}  ({size / 1e6:.1f} MB)")
     for f in sorted(BUILD.rglob("*")):
@@ -81,6 +86,11 @@ def main() -> None:
     print("  git init -b main && git add -A && git commit -m 'Solubility predictor'")
     print("  git remote add origin https://huggingface.co/spaces/<user>/<space>")
     print("  git push origin main")
+    print("\nOr, with the token from `hf auth login` already stored:")
+    print("  from huggingface_hub import HfApi")
+    print("  HfApi().upload_folder(folder_path='space/build',")
+    print("      repo_id='<user>/<space>', repo_type='space',")
+    print("      ignore_patterns=['__pycache__/*', '*.pyc'])")
 
 
 if __name__ == "__main__":

@@ -143,6 +143,24 @@ better. That contrast is itself a good second experiment.
 
 ---
 
+## QM module, verified
+
+`qm_descriptors()` on ethanol, B3LYP/6-31G* single point over an
+MMFF-relaxed ETKDG conformer — 2.6 s, geometry embedding 0.03 s:
+
+| quantity | computed | check |
+|---|---|---|
+| HOMO | −7.077 eV | plausible for a saturated alcohol |
+| LUMO | +2.059 eV | positive, as expected for a bound virtual orbital |
+| gap | 9.135 eV | wide, consistent with a colorless insulator |
+| dipole | 1.659 D | **experimental gas-phase value is 1.69 D** |
+| Mulliken | −0.626 … +0.391 | O most negative, its H most positive |
+
+The dipole landing within 0.03 D of experiment is the useful check: it
+says the geometry, the basis, and the unit conversion are all correct.
+A wrong Angstrom/Bohr conversion or a broken conformer would miss by a
+factor, not by 2%.
+
 ## Honest limitations
 
 - **Single points on MMFF geometries**, not DFT-optimized structures.

@@ -66,11 +66,11 @@ MODEL, DF, TRAIN_IDX, TRAIN_SMILES, TRAIN_FPS, DESCRIPTOR_NAMES = _load()
 def predict(smiles: str):
     smiles = (smiles or "").strip()
     if not smiles:
-        return None, "Enter a SMILES string.", ""
+        return None, "Enter a SMILES string.", None
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        return None, f"RDKit could not parse `{smiles}` — not a valid molecule.", ""
+        return None, f"RDKit could not parse `{smiles}` — not a valid molecule.", None
 
     from qmprop.features import build_features
 
@@ -84,7 +84,7 @@ def predict(smiles: str):
         return None, (
             f"Feature mismatch: built {X.shape[1]}, model expects "
             f"{MODEL.n_features_in_}. Rerun scripts/02_featurize.py."
-        ), ""
+        ), None
     pred = float(MODEL.predict(X)[0])
 
     query_fp = _gen.GetFingerprint(mol)
