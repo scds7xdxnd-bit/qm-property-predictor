@@ -51,10 +51,16 @@ def _load():
 
     train_smiles = df["smiles"].iloc[train_idx].tolist()
     train_fps = [_gen.GetFingerprint(Chem.MolFromSmiles(s_)) for s_ in train_smiles]
-    return model, df, train_idx, train_smiles, train_fps
+
+    # The exact descriptor columns that survived training-time filtering.
+    # Inference must reproduce this list verbatim or the feature count
+    # silently drifts and the model rejects the input.
+    descriptor_names = [str(n) for n in cache["descriptor_names"]]
+
+    return model, df, train_idx, train_smiles, train_fps, descriptor_names
 
 
-MODEL, DF, TRAIN_IDX, TRAIN_SMILES, TRAIN_FPS = _load()
+MODEL, DF, TRAIN_IDX, TRAIN_SMILES, TRAIN_FPS, DESCRIPTOR_NAMES = _load()
 
 
 def predict(smiles: str):
@@ -72,8 +78,13 @@ def predict(smiles: str):
     X, _ = build_features(
         [canonical],
         morgan_kwargs=cfg["features"]["morgan"],
-        descriptor_names=cfg["features"]["descriptors"]["names"],
+        descriptor_names=DESCRIPTOR_NAMES,
     )
+    if X.shape[1] != MODEL.n_features_in_:
+        return None, (
+            f"Feature mismatch: built {X.shape[1]}, model expects "
+            f"{MODEL.n_features_in_}. Rerun scripts/02_featurize.py."
+        ), ""
     pred = float(MODEL.predict(X)[0])
 
     query_fp = _gen.GetFingerprint(mol)

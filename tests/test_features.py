@@ -58,3 +58,36 @@ def test_build_features_rejects_mismatched_qm_rows():
 def test_build_features_requires_at_least_one_family():
     with pytest.raises(ValueError, match="no feature family"):
         build_features(SMILES, use_morgan=False, use_descriptors=False)
+
+
+def test_explicit_names_keep_every_column_for_one_molecule():
+    """Regression: the constant-column filter is training-time logic.
+
+    With one molecule every column has zero variance, so running the
+    filter at inference drops all of them and the model is handed the
+    wrong feature count. Explicit names must round-trip exactly.
+    """
+    _, names = descriptor_matrix(SMILES)          # training: filter runs
+    X_one, names_one = descriptor_matrix(["CCO"], names=names)
+    assert names_one == names
+    assert X_one.shape == (1, len(names))
+    assert np.isfinite(X_one).all()
+
+
+def test_single_molecule_matches_training_feature_count():
+    """The exact failure the Space hit: 2048 built vs 2247 expected."""
+    _, desc_names = descriptor_matrix(SMILES)
+    X_train, train_names = build_features(
+        SMILES, morgan_kwargs={"n_bits": 64, "radius": 2},
+        descriptor_names=desc_names,
+    )
+    X_one, _ = build_features(
+        ["CCO"], morgan_kwargs={"n_bits": 64, "radius": 2},
+        descriptor_names=desc_names,
+    )
+    assert X_one.shape[1] == X_train.shape[1] == len(train_names)
+
+
+def test_drop_degenerate_can_be_forced_off():
+    X, names = descriptor_matrix(["CCO"], drop_degenerate=False)
+    assert X.shape[0] == 1 and X.shape[1] == len(names) > 100

@@ -69,13 +69,23 @@ def morgan_matrix(
 
 
 def descriptor_matrix(
-    smiles: Sequence[str], names: Iterable[str] | None = None
+    smiles: Sequence[str],
+    names: Iterable[str] | None = None,
+    drop_degenerate: bool | None = None,
 ) -> tuple[np.ndarray, list[str]]:
-    """RDKit descriptor matrix, with degenerate columns removed.
+    """RDKit descriptor matrix.
 
-    Drops any column that is constant or contains non-finite values --
-    a handful of RDKit descriptors return inf or NaN for exotic
-    structures and will silently poison a linear model.
+    When selecting from the full catalogue (`names=None`), drops any
+    column that is constant or non-finite: a handful of RDKit
+    descriptors return inf or NaN on exotic structures and will silently
+    poison a linear model.
+
+    That filter is TRAINING-TIME logic and must not run at inference.
+    Applied to a single molecule every column has zero variance, so it
+    would drop all of them and hand the model the wrong feature count.
+    So it defaults off whenever explicit `names` are given -- pass the
+    exact column list the model was fitted on and you get exactly those
+    columns back, in order, with non-finite values zero-filled.
     """
     mols = to_mols(smiles)
     catalogue = dict(Descriptors._descList)
@@ -96,6 +106,13 @@ def descriptor_matrix(
         rows.append(row)
 
     X = np.asarray(rows, dtype=np.float64)
+
+    if drop_degenerate is None:
+        drop_degenerate = names is None
+
+    if not drop_degenerate:
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        return X.astype(np.float32), list(selected)
 
     finite = np.isfinite(X).all(axis=0)
     varying = np.nanstd(X, axis=0) > 0
