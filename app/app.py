@@ -27,6 +27,29 @@ from qmprop.splits import get_split
 
 NEIGHBOR_WARN = 0.4  # below this max-Tanimoto, call it extrapolation
 
+# ZeroGPU requires at least one @spaces.GPU function to exist at startup,
+# or the scheduler refuses to start the container:
+#
+#   errorMessage: "No @spaces.GPU function detected during startup"
+#
+# This app is CPU-only -- a random forest over fingerprints -- and a free
+# account cannot move a Space off ZeroGPU. So register one decorated
+# function to satisfy the check. It is never called on the request path,
+# so it consumes no GPU quota; predictions run on CPU exactly as they do
+# locally. `spaces` is injected by the Space image and absent elsewhere.
+try:
+    import spaces
+except ImportError:
+    spaces = None
+
+if spaces is not None:
+
+    @spaces.GPU(duration=5)
+    def _zerogpu_registration() -> str:
+        """Present so ZeroGPU will schedule the container. Not used."""
+        return "ok"
+
+
 cfg = load_config()
 TARGET = cfg["dataset"]["target_name"]
 _gen = rdFingerprintGenerator.GetMorganGenerator(

@@ -1,5 +1,8 @@
 # QM-augmented property predictor
 
+**Live demo:** https://huggingface.co/spaces/taeyangkimi/solubility-predictor
+
+
 **The question:** once a model already has Morgan fingerprints and cheap
 RDKit descriptors, do quantum-chemical features — B3LYP orbital energies,
 dipole moment, Mulliken charges — add anything measurable? Or is the
