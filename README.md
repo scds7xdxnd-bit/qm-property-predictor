@@ -8,8 +8,13 @@ RDKit descriptors, do quantum-chemical features — B3LYP orbital energies,
 dipole moment, Mulliken charges — add anything measurable? Or is the
 physics already implicit in the structure?
 
-The answer is not obvious, which is what makes it worth running. Built as
-a project across all seven chapters of *파이썬을 이용한 화학 인공지능*
+**The answer, measured: no.** Across 195 molecules with converged DFT,
+scaffold k-fold and a paired bootstrap, QM features move RMSE by less
+than the confidence interval for three of four models. The fourth
+appears to improve until you replace the quantum features with Gaussian
+noise and get most of the same gain. [Full result below](#the-answer-no-qm-does-not-help-here).
+
+Built as a project across all seven chapters of *파이썬을 이용한 화학 인공지능*
 (정근홍, 사이플러스, 2024).
 
 ---
@@ -275,22 +280,69 @@ molecules and recomputing both arms' RMSE on each resample, and the
 script reports the CI width so a null result comes with the size of the
 effect it could not have detected.
 
-### How to read the result
+### The answer: no, QM does not help here
 
-Three outcomes, and what each would mean:
+Run on **195 molecules** (200 attempted; 5 iodine compounds have no
+6-31G\* basis), 5-fold scaffold CV, out-of-fold predictions for every
+molecule, 10,000 paired bootstrap resamples:
 
-- **QM adds little.** The most likely one for solubility — it is
-  dominated by polarity and H-bonding, which TPSA and LogP already
-  encode. A null result here is a real finding, not a failed experiment,
-  provided it is reported with the CI width that says how small an
-  effect could still be hiding.
-- **QM helps the linear models but not the trees.** Would suggest the
-  trees were already extracting equivalent information from structure,
-  and the quantum features are a more convenient encoding rather than
-  new information.
-- **QM helps everything.** The interesting case, and the one to distrust
-  first: molecule size correlates with both QM cost and solubility, so
-  check that size did not enter as a confound before believing it.
+| model | fingerprints+desc | +QM | delta | 95% CI | verdict |
+|---|---:|---:|---:|---:|---|
+| Ridge | 0.860 | 0.858 | −0.002 | [−0.011, +0.008] | no measurable effect |
+| Random forest | 1.007 | 1.007 | −0.000 | [−0.007, +0.007] | no measurable effect |
+| XGBoost | 0.909 | 0.946 | +0.037 | [+0.009, +0.065] | QM *hurts* |
+| MLP | 1.352 | 1.170 | −0.182 | [−0.301, −0.060] | QM helps? |
+
+Three of four models show nothing or slightly worse. The MLP appears to
+improve — and it is the only interesting number in the table, so it is
+the one that had to be checked rather than reported.
+
+**It does not survive its controls.** Rerun the MLP with the QM block
+replaced by things that contain no quantum chemistry at all:
+
+| extra block | MLP RMSE | change |
+|---|---:|---:|
+| none | 1.352 | — |
+| real QM | 1.170 | **−0.18** |
+| QM rows shuffled (same distributions, no link to the molecule) | 1.228 | −0.12 |
+| eight Gaussian noise columns | 1.239 | −0.11 |
+| eight copies of heavy-atom count | 1.181 | **−0.17** |
+
+Pure noise reproduces two-thirds of the gain, and molecular size alone
+reproduces nearly all of it. The MLP was not learning chemistry; it was
+benefiting from eight more well-scaled continuous columns, plus size —
+which the QM block is partly a proxy for. The HOMO–LUMO gap correlates
+**−0.54** with heavy-atom count here, HOMO **+0.42**, max Mulliken
+charge **+0.47**.
+
+So the answer to the question the project was built to ask:
+
+> **B3LYP/6-31G\* orbital energies, dipole moment and Mulliken charges
+> add nothing measurable to aqueous solubility prediction once Morgan
+> fingerprints and RDKit descriptors are already in hand.**
+
+That is a real finding, not a failed experiment. Solubility is dominated
+by polarity and hydrogen bonding, and TPSA, LogP and the H-bond donor
+and acceptor counts already encode them — cheaply, and without an hour
+of DFT. The honest caveat: at n=195 the mean 95% CI width on the delta
+is **0.083 log units**, so an effect smaller than about ±0.04 could not
+have been seen here. Absence of evidence at this sample size, not proof
+of absence.
+
+Two side observations worth keeping:
+
+- **QM features alone are not useless** — 8 of them reach RMSE 1.66
+  (R² 0.27) with a random forest. They carry real signal. It is just
+  signal the cheap descriptors already have.
+- **Fingerprints alone collapse on this subset** (RMSE 1.93, R² 0.01)
+  while descriptors alone nearly match the full set (0.874 vs 0.860).
+  With 156 training molecules, 2048 sparse binary columns cannot learn;
+  185 dense physicochemical ones can. A small-data result, and a good
+  argument for descriptors over fingerprints when data is scarce.
+
+`05_ablation.py` runs those controls automatically whenever any model
+reports "QM helps", so this check is part of the pipeline rather than
+something I happened to think of once.
 
 Swap the target to something more electronic — HOMO–LUMO gap prediction,
 redox potentials, reaction barriers — and the QM arm should look much

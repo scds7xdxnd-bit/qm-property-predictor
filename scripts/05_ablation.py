@@ -65,6 +65,69 @@ BASE_ARM = "fingerprint+desc"
 QM_ARM = "fingerprint+desc+qm"
 
 
+def run_controls(smiles, y, qm_matrix, folds, cfg, models, seed):
+    """Is a "QM helps" verdict information, or just more columns?
+
+    Three controls, each scored exactly like the real arm:
+
+      shuffled QM  the real matrix with its rows permuted -- identical
+                   marginal distributions, zero link to the molecule
+      gaussian     eight standard normals
+      heavy atoms  eight copies of the heavy-atom count
+
+    An MLP will often improve when handed any block of well-scaled
+    continuous columns, whatever is in them, so the noise controls
+    separate "the features carry chemistry" from "the model liked the
+    extra inputs". The size control matters because QM descriptors are
+    partly a size proxy -- the HOMO-LUMO gap correlates about -0.54 with
+    heavy-atom count here -- and molecule size predicts solubility on
+    its own.
+
+    If a control reproduces the gain, the gain is not quantum chemistry.
+    """
+    from rdkit import Chem
+
+    rng = np.random.default_rng(seed)
+    heavy = np.array([Chem.MolFromSmiles(s).GetNumHeavyAtoms()
+                      for s in smiles], dtype=float)
+
+    print("\n== controls: does anything else reproduce the gain? ==\n")
+    print("QM feature correlation with heavy-atom count:")
+    for i, name in enumerate(QM_FEATURE_NAMES):
+        print(f"  {name:28} r = {np.corrcoef(qm_matrix[:, i], heavy)[0, 1]:+.3f}")
+
+    blocks = {
+        "none (base)": None,
+        "real QM": qm_matrix,
+        "shuffled QM": qm_matrix[rng.permutation(len(qm_matrix))],
+        "gaussian noise": rng.standard_normal(qm_matrix.shape).astype(np.float32),
+        "heavy-atom count": np.repeat(heavy[:, None], qm_matrix.shape[1],
+                                      axis=1).astype(np.float32),
+    }
+
+    header = f"\n{'extra block':<20}" + "".join(f"{m:>16}" for m in models)
+    print(header)
+    print("-" * len(header))
+
+    baseline, out = {}, {}
+    for label, extra in blocks.items():
+        X, _ = build_features(
+            smiles, morgan_kwargs=cfg["features"]["morgan"],
+            qm_matrix=extra,
+            qm_names=QM_FEATURE_NAMES if extra is not None else None,
+            descriptor_names=cfg["features"]["descriptors"]["names"])
+        line = f"{label:<20}"
+        for name in models:
+            pred = out_of_fold(name, X, y, folds, seed)
+            rmse = regression_metrics(y, pred)["rmse"]
+            baseline.setdefault(name, rmse)
+            out.setdefault(label, {})[name] = rmse
+            line += (f"{rmse:>16.3f}" if extra is None
+                     else f"{rmse:>10.3f}{rmse - baseline[name]:>+6.2f}")
+        print(line)
+    return out
+
+
 def out_of_fold(model_name, X, y, folds, seed):
     """Train once per fold, predict the held-out fold. Returns predictions
     for every molecule, each made by a model that never saw it."""
@@ -215,12 +278,35 @@ def main() -> None:
         print("  encode. Report it as a null result, with the honest caveat that")
         print(f"  an effect smaller than ~{width / 2:.2f} log units could not have been")
         print("  seen here -- absence of evidence at this n, not proof of absence.")
-    elif any(v == "QM helps" for v in verdicts):
-        print("\n  At least one model improved beyond the interval. Before")
-        print("  believing it: molecule size correlates with both QM cost and")
-        print("  solubility, so check that size did not enter as a confound.")
+    controls = None
+    if any(v == "QM helps" for v in verdicts):
+        print("\n  At least one model improved beyond the interval. Running the")
+        print("  controls before believing it.")
+        helped = [m for m in cfg["models"]
+                  if deltas_out.get(m, {}).get("verdict") == "QM helps"]
+        controls = run_controls(smiles, y[scored], qm_matrix, folds, cfg,
+                                helped + ["ridge"], scfg["seed"])
 
-    payload = {"metrics": rows, "qm_delta": deltas_out,
+        real = {m: controls["real QM"][m] - controls["none (base)"][m]
+                for m in helped}
+        noise = {m: controls["gaussian noise"][m] - controls["none (base)"][m]
+                 for m in helped}
+        size = {m: controls["heavy-atom count"][m] - controls["none (base)"][m]
+                for m in helped}
+        for m in helped:
+            print(f"\n  {m}: real QM {real[m]:+.2f}, but gaussian noise alone "
+                  f"gives {noise[m]:+.2f}")
+            print(f"  and heavy-atom count alone gives {size[m]:+.2f}.")
+            if abs(size[m]) >= 0.8 * abs(real[m]) or abs(noise[m]) >= 0.5 * abs(real[m]):
+                print(f"  The gain survives neither control -- it is the model"
+                      f" liking extra")
+                print(f"  scaled columns, plus molecular size that QM features"
+                      f" proxy. Not")
+                print(f"  quantum chemistry. Report it as a null result.")
+            else:
+                print("  The gain survives both controls; it may be real.")
+
+    payload = {"metrics": rows, "qm_delta": deltas_out, "controls": controls,
                "n_scored": int(len(y_scored)),
                "evaluation": "single 80/20 scaffold split" if args.single_split
                else f"{args.folds}-fold scaffold CV"}
