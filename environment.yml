@@ -1,0 +1,22 @@
+# conda env create -f environment.yml && conda activate qmprop
+name: qmprop
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - rdkit=2024.03.*        # cheminformatics: SMILES, descriptors, fingerprints, scaffolds
+  - pyscf=2.6.*            # quantum chemistry (the free stand-in for Gaussian)
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - xgboost
+  - matplotlib
+  - pyyaml
+  - tqdm
+  - joblib
+  - pytest
+  - jupyterlab
+  - pip
+  - pip:
+      - gradio>=4.44

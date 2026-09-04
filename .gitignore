@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+env/
+
+# Data and outputs are reproducible from scripts — don't commit them.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+results/*
+!results/figures/
+results/figures/*
+!results/figures/.gitkeep
+
+# PySCF scratch
+*.chk
+tmp*/
+.DS_Store

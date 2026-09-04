@@ -1,0 +1,41 @@
+# Single source of truth for the pipeline. Every script reads this.
+
+dataset:
+  name: esol
+  url: https://deepchem.s3.us-west-1.amazonaws.com/datasets/delaney-processed.csv
+  smiles_column: smiles
+  target_column: "measured log solubility in mols per litre"
+  target_name: logS          # aqueous solubility, log10(mol/L)
+
+split:
+  method: scaffold           # scaffold | random  — scaffold is the honest one
+  frac_train: 0.8
+  frac_valid: 0.0
+  frac_test: 0.2
+  seed: 42
+
+features:
+  morgan:
+    radius: 2                # ECFP4
+    n_bits: 2048
+  descriptors:
+    # null = all ~210 RDKit descriptors. Constant and NaN columns are dropped.
+    names: null
+
+qm:
+  # The expensive arm. Runs on a subset; every ablation arm is scored on
+  # exactly this subset so the comparison is not confounded.
+  subset_size: 200
+  max_heavy_atoms: 20        # PySCF cost scales steeply; keep molecules small
+  basis: 6-31G*
+  xc: b3lyp
+  conformer_seed: 0xf00d
+  mmff_max_iters: 500
+
+models:
+  - ridge
+  - random_forest
+  - xgboost
+  - mlp
+
+output_dir: results
