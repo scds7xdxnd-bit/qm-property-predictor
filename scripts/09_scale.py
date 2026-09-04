@@ -29,57 +29,14 @@ import pandas as pd
 
 import _bootstrap  # noqa: F401
 from qmprop import load_config
-from qmprop.data import canonical_smiles, inchikey
 from qmprop.evaluate import regression_metrics
-from qmprop.external import load_aqsoldb
+from qmprop.external import build_enriched
 from qmprop.features import build_features
 from qmprop.models import build_model
 from qmprop.splits import scaffold_split
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("scale")
-
-
-def build_enriched(cfg) -> pd.DataFrame:
-    """ESOL ∪ AqSolDB, deduplicated by InChIKey, cached to disk.
-
-    ESOL rows win on conflict. Not because they are better -- AqSolDB
-    merges nine sources and often has more support -- but because every
-    other result in this project is measured on ESOL values, and quietly
-    swapping the target for the overlapping 1117 molecules would make
-    those numbers incomparable.
-    """
-    dest = cfg["data_dir"] / "processed" / "dataset_enriched.csv"
-    if dest.exists():
-        log.info("using cached %s", dest.name)
-        return pd.read_csv(dest)
-
-    esol = pd.read_csv(cfg["data_dir"] / "processed" / "dataset.csv")
-    aq = load_aqsoldb(cfg["data_dir"] / "raw" / "aqsoldb.tab")
-
-    aq = aq.rename(columns={"logS_aqsoldb": "logS"})[["smiles", "logS"]].copy()
-    aq["smiles"] = aq["smiles"].map(canonical_smiles)
-    aq = aq.dropna(subset=["smiles"])
-    aq["inchikey"] = aq["smiles"].map(inchikey)
-    aq = aq.dropna(subset=["inchikey"])
-    # AqSolDB itself carries repeats; collapse before the union so the
-    # mean is over distinct records rather than whatever order they land in.
-    aq = aq.groupby("inchikey", as_index=False).agg(
-        smiles=("smiles", "first"), logS=("logS", "mean"))
-
-    new = aq[~aq["inchikey"].isin(set(esol["inchikey"]))]
-    log.info("ESOL %d, AqSolDB %d unique, %d of them new -> %d total",
-             len(esol), len(aq), len(new), len(esol) + len(new))
-    if len(new) + len(esol) == len(aq):
-        log.info("every ESOL molecule is already in AqSolDB, as expected -- "
-                 "ESOL is one of its nine sources")
-
-    out = pd.concat([esol[["inchikey", "smiles", "logS"]], new],
-                    ignore_index=True)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(dest, index=False)
-    log.info("wrote %s (%d molecules)", dest, len(out))
-    return out
 
 
 def subsample(df: pd.DataFrame, n: int, seed: int) -> pd.DataFrame:

@@ -183,3 +183,50 @@ def chembl_resolve(name: str, timeout: int = 30) -> dict | None:
 def resolve_name(name: str) -> dict | None:
     """PubChem first, ChEMBL second. Ch 7's front door."""
     return pubchem_resolve(name) or chembl_resolve(name)
+
+
+def build_enriched(cfg, dest: Path | None = None) -> pd.DataFrame:
+    """ESOL union AqSolDB, deduplicated by InChIKey, cached to disk.
+
+    ESOL rows win on conflict. Not because they are better -- AqSolDB
+    merges nine sources and usually has more support -- but because
+    every other number in this project is measured against ESOL values,
+    and quietly swapping the target for the overlapping molecules would
+    make those numbers incomparable with these.
+
+    AqSolDB carries repeated InChIKeys of its own, so those are
+    collapsed to their mean *before* the union. Doing it after would let
+    a molecule's duplicate count decide whether it survives the overlap
+    filter.
+    """
+    from .data import canonical_smiles, inchikey
+
+    dest = dest or (cfg["data_dir"] / "processed" / "dataset_enriched.csv")
+    if dest.exists():
+        log.info("using cached %s", dest.name)
+        return pd.read_csv(dest)
+
+    esol = pd.read_csv(cfg["data_dir"] / "processed" / "dataset.csv")
+    aq = load_aqsoldb(cfg["data_dir"] / "raw" / "aqsoldb.tab")
+
+    aq = aq.rename(columns={"logS_aqsoldb": "logS"})[["smiles", "logS"]].copy()
+    aq["smiles"] = aq["smiles"].map(canonical_smiles)
+    aq = aq.dropna(subset=["smiles"])
+    aq["inchikey"] = aq["smiles"].map(inchikey)
+    aq = aq.dropna(subset=["inchikey"])
+    aq = aq.groupby("inchikey", as_index=False).agg(
+        smiles=("smiles", "first"), logS=("logS", "mean"))
+
+    new = aq[~aq["inchikey"].isin(set(esol["inchikey"]))]
+    log.info("ESOL %d, AqSolDB %d unique, %d of them new -> %d total",
+             len(esol), len(aq), len(new), len(esol) + len(new))
+    if len(new) + len(esol) == len(aq):
+        log.info("every ESOL molecule is already in AqSolDB, as expected -- "
+                 "ESOL is one of its nine sources")
+
+    out = pd.concat([esol[["inchikey", "smiles", "logS"]], new],
+                    ignore_index=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    out.to_csv(dest, index=False)
+    log.info("wrote %s (%d molecules)", dest, len(out))
+    return out

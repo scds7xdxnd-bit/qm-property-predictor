@@ -112,3 +112,78 @@ def test_pubchem_returns_none_for_nonsense():
 @pytest.mark.network
 def test_resolve_name_falls_through_to_none():
     assert _needs_network(resolve_name, "zzzz-not-a-compound-xyzzy") is None
+
+
+# --- the enriched union ---------------------------------------------------
+
+@pytest.fixture
+def fake_project(tmp_path, monkeypatch):
+    """A miniature data/ tree so build_enriched runs without the network."""
+    (tmp_path / "processed").mkdir(parents=True)
+    (tmp_path / "raw").mkdir(parents=True)
+
+    pd.DataFrame({
+        "inchikey": ["LFQSCWFLJHTTHZ-UHFFFAOYSA-N"],   # ethanol
+        "smiles": ["CCO"],
+        "logS": [1.10],
+    }).to_csv(tmp_path / "processed" / "dataset.csv", index=False)
+
+    # AqSolDB fixture: repeats ethanol (with a different value), lists
+    # propanol twice, and includes one unparseable row.
+    pd.DataFrame({
+        "ID": ["A", "B", "C", "D"],
+        "Name": ["ethanol", "propanol", "propanol", "junk"],
+        "InChIKey": ["x", "y", "y", "z"],
+        "SMILES": ["CCO", "CCCO", "OCCC", "not-a-molecule"],
+        "Solubility": [-9.99, -0.60, -0.72, 0.0],
+        "SD": [0.0, 0.1, 0.1, 0.0],
+        "Ocurrences": [1, 2, 2, 1],
+    }).to_csv(tmp_path / "raw" / "aqsoldb.tab", sep="\t", index=False)
+
+    return {"data_dir": tmp_path}
+
+
+def test_enriched_keeps_esol_value_on_overlap(fake_project):
+    """ESOL wins conflicts, so earlier results stay comparable."""
+    from qmprop.external import build_enriched
+
+    out = build_enriched(fake_project)
+    ethanol = out[out["smiles"] == "CCO"]
+    assert len(ethanol) == 1
+    assert ethanol.iloc[0]["logS"] == pytest.approx(1.10)
+
+
+def test_enriched_collapses_aqsoldb_duplicates_by_structure(fake_project):
+    """'CCCO' and 'OCCC' are the same molecule written two ways. They must
+    merge to one row averaging the two measurements, not survive as two."""
+    from qmprop.external import build_enriched
+
+    out = build_enriched(fake_project)
+    propanol = out[out["inchikey"].str.startswith("BDERNNFJNOPAEC")]
+    assert len(propanol) == 1
+    assert propanol.iloc[0]["logS"] == pytest.approx(-0.66)
+
+
+def test_enriched_drops_unparseable_rows(fake_project):
+    from qmprop.external import build_enriched
+
+    out = build_enriched(fake_project)
+    assert not out["smiles"].isna().any()
+    assert "not-a-molecule" not in set(out["smiles"])
+
+
+def test_enriched_has_no_duplicate_keys(fake_project):
+    from qmprop.external import build_enriched
+
+    out = build_enriched(fake_project)
+    assert out["inchikey"].is_unique
+
+
+def test_enriched_is_cached_not_rebuilt(fake_project):
+    from qmprop.external import build_enriched
+
+    first = build_enriched(fake_project)
+    # Corrupt the source; a rebuild would now fail or differ.
+    (fake_project["data_dir"] / "raw" / "aqsoldb.tab").write_text("garbage\n")
+    second = build_enriched(fake_project)
+    assert list(first["smiles"]) == list(second["smiles"])
