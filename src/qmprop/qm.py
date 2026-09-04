@@ -121,25 +121,38 @@ def qm_descriptors(
     max_heavy_atoms: int = 20,
     conformer_seed: int = 0xF00D,
     mmff_max_iters: int = 500,
-    max_memory_mb: int = 900,
+    max_memory_mb: int = 400,
 ) -> QMResult:
     """Compute QM features for one molecule. Never raises -- failures
     come back as `ok=False` with a reason, so a batch run does not die
     on molecule 137 of 200.
 
-    `max_memory_mb` is the one knob worth understanding. PySCF's default
-    is 4000 MB, and it will happily store the whole two-electron integral
-    tensor if it believes that fits. For 6-31G* on 20 heavy atoms that is
-    ~250 basis functions, and 250^4/8 doubles is about 3.9 GB -- so it
-    decides it fits, allocates it, and three parallel workers ask an 8 GB
-    laptop for 10 GB. Measured here: resident sets of 2.6-3.6 GB per
-    worker, kernel_task pinned at ~95% running the memory compressor, and
-    each worker getting 8% of a core.
+    `max_memory_mb` caps PySCF's working budget (its default is 4000 MB).
+    It matters because parallel workers multiply it: three of them
+    swapping an 8 GB laptop was measured at ~8% of a core each, with
+    kernel_task pinned near 95% running the memory compressor.
 
-    Setting a small budget makes PySCF fall back to direct SCF, which
-    recomputes integrals instead of storing them. More arithmetic, far
-    less memory, and on a machine that would otherwise swap it is faster
-    by a wide margin. Raise it if you have the RAM.
+    Measured on 4-aminophenyl sulfone (17 heavy atoms, ~250 basis
+    functions), one process, peak RSS:
+
+        budget 4000 MB -> 1169 MB,  269 s
+        budget  900 MB -> 1113 MB,  266 s
+        budget  400 MB ->  766 MB,  255 s
+
+    Two things to take from that. The cap works, but not linearly -- it
+    buys almost nothing until it is tight enough to bind, and the useful
+    setting here is 400, not 900. And the answers are unchanged: gap
+    5.0784 eV and dipole 8.9588 D at every budget, identical to four
+    decimals, so this is a memory-strategy knob and not a accuracy knob.
+    Time does not get worse either, which it would if this were forcing
+    a much slower algorithm.
+
+    A caveat on the mechanism, since it is easy to assume: at the default
+    budget this molecule peaked at 1169 MB, nowhere near the ~3.9 GB a
+    stored 250^4/8 ERI tensor would need, so PySCF was not holding the
+    full integral list here regardless. The larger jobs that pushed
+    workers to 2.6-3.6 GB may well have been; that was not measured.
+    Raise the budget if you have the RAM and are running few workers.
     """
     mol2d = Chem.MolFromSmiles(smiles)
     if mol2d is None:
