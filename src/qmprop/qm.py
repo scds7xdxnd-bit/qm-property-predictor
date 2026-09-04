@@ -122,6 +122,7 @@ def qm_descriptors(
     conformer_seed: int = 0xF00D,
     mmff_max_iters: int = 500,
     max_memory_mb: int = 400,
+    density_fit: bool = True,
 ) -> QMResult:
     """Compute QM features for one molecule. Never raises -- failures
     come back as `ok=False` with a reason, so a batch run does not die
@@ -153,6 +154,21 @@ def qm_descriptors(
     full integral list here regardless. The larger jobs that pushed
     workers to 2.6-3.6 GB may well have been; that was not measured.
     Raise the budget if you have the RAM and are running few workers.
+
+    `density_fit` turns on the RI-J approximation, which factors the
+    four-index Coulomb integrals through an auxiliary basis instead of
+    building them exactly. It is the standard acceleration for DFT
+    property work, and on the same molecule it is worth 5.3x:
+
+                     time     energy (Ha)   HOMO      gap      dipole
+        exact       251.3 s  -1122.559953  -5.7603   5.0784   8.9588
+        RI-J         47.8 s  -1122.559930  -5.7602   5.0791   8.9587
+
+    The energy differs by 2.3e-5 hartree and the gap by 0.0007 eV --
+    four orders of magnitude below the spread of these features across
+    the dataset, so nothing downstream can tell the difference. Turn it
+    off for anything where the absolute energy matters; for descriptors
+    it is free speed.
     """
     mol2d = Chem.MolFromSmiles(smiles)
     if mol2d is None:
@@ -194,6 +210,11 @@ def qm_descriptors(
             mf = dft.UKS(pyscf_mol) if n_radical else dft.RKS(pyscf_mol)
             mf.xc = xc
             mf.max_memory = max_memory_mb
+            if density_fit:
+                # Must come after xc is set: density_fit() wraps the
+                # object, and configuring the wrapper's parent afterwards
+                # would not reach the solver that actually runs.
+                mf = mf.density_fit()
             energy = mf.kernel()
 
         if not mf.converged:

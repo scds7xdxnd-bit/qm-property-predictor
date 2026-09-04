@@ -34,6 +34,19 @@ qm:
   xc: b3lyp
   conformer_seed: 0xf00d
   mmff_max_iters: 500
+  # RI-J. Measured 5.3x faster (251 s -> 48 s on a 17-heavy-atom
+  # molecule) with the gap moving 0.0007 eV and the dipole 0.0001 D.
+  # Turn off if you ever need absolute energies rather than descriptors.
+  density_fit: true
+  # Caps PySCF's working budget. Matters because parallel workers
+  # multiply it; 400 MB was where it started to bind on an 8 GB machine.
+  max_memory_mb: 400
+  # Not taken: dropping the DFT grid to level 2 was a further 1.4x
+  # (48 s -> 33 s) and moved nothing on the one molecule tested. One
+  # molecule is thin evidence for a grid change, and coarse grids bite
+  # hardest on heavy atoms and diffuse density, which that molecule has
+  # neither of. Left at PySCF's default until it is worth measuring
+  # properly.
 
 models:
   - ridge

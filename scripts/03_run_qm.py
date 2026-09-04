@@ -140,6 +140,8 @@ def main() -> None:
         max_heavy_atoms=qcfg["max_heavy_atoms"],
         conformer_seed=qcfg["conformer_seed"],
         mmff_max_iters=qcfg["mmff_max_iters"],
+        density_fit=qcfg.get("density_fit", True),
+        max_memory_mb=qcfg.get("max_memory_mb", 400),
     )
     def record(i: int, res, elapsed: float) -> None:
         """Append one result. The parent owns the file, so the workers
