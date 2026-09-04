@@ -68,20 +68,33 @@ def embed_3d(smiles: str, seed: int = 0xF00D, max_iters: int = 500):
 
     Returns (mol, reason). `mol` is None when embedding fails, which
     happens for a small fraction of strained cages and large macrocycles.
+    Never raises: the batch runner's whole design depends on a bad
+    molecule costing one row rather than the run.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None, "unparseable SMILES"
 
+    # An empty SMILES parses to a valid Mol with zero atoms rather than
+    # to None, so it slips past the check above and then makes
+    # EmbedMolecule raise "molecule has no atoms". That would take a
+    # 200-molecule batch down mid-run and leave a partial CSV looking
+    # like a finished subset.
+    if mol.GetNumAtoms() == 0:
+        return None, "empty molecule (no atoms)"
+
     mol = Chem.AddHs(mol)
 
-    params = AllChem.ETKDGv3()
-    params.randomSeed = seed
-    if AllChem.EmbedMolecule(mol, params) != 0:
-        # Retry with random coordinates before giving up.
-        params.useRandomCoords = True
+    try:
+        params = AllChem.ETKDGv3()
+        params.randomSeed = seed
         if AllChem.EmbedMolecule(mol, params) != 0:
-            return None, "ETKDG embedding failed"
+            # Retry with random coordinates before giving up.
+            params.useRandomCoords = True
+            if AllChem.EmbedMolecule(mol, params) != 0:
+                return None, "ETKDG embedding failed"
+    except Exception as exc:      # noqa: BLE001 - never raise, see docstring
+        return None, f"embedding error: {type(exc).__name__}: {exc}"[:120]
 
     try:
         AllChem.MMFFOptimizeMolecule(mol, maxIters=max_iters)
