@@ -9,6 +9,7 @@ so rather than quietly returning a confident-looking number
     python app/app.py
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -164,5 +165,34 @@ def build_ui() -> "gr.Blocks":
 demo = build_ui()
 
 
-if __name__ == "__main__":
-    demo.launch()
+# Launch at MODULE level, with no __main__ guard.
+#
+# A Hugging Face Space imports this file rather than running it as a
+# script, so everything under `if __name__ == "__main__":` is dead code
+# there. That is why three earlier fixes had no effect: the Space showed
+# launch() output but exited, and even an explicit block_thread() inside
+# the guard never ran (it cannot return silently -- it would have logged).
+#
+# Module-level launch is also what HF's own Space template does.
+#
+# ssr_mode=False because the Space's Node SSR proxy dies at startup and
+# takes the app down with it. Nothing here needs server-side rendering.
+#
+# Set QMPROP_NO_LAUNCH=1 to import this module without starting a server
+# (used by the tests and the build smoke check).
+if os.environ.get("QMPROP_NO_LAUNCH") != "1":
+    # Do not rely on gradio's automatic thread block. From its source:
+    #
+    #   is_in_interactive_mode = bool(getattr(sys, "ps1", sys.flags.interactive))
+    #   if not prevent_thread_lock and not is_in_interactive_mode:
+    #       self.block_thread()
+    #
+    # The Space invokes this file with Python's interactive flag set, so
+    # gradio SKIPS the block on purpose: launch() prints its URLs,
+    # returns, the process ends, and the container reports RUNTIME_ERROR
+    # with no traceback. Locally the flag is unset, so it blocks and the
+    # bug is invisible.
+    #
+    # So: return deterministically, then hold the thread ourselves.
+    demo.launch(ssr_mode=False, prevent_thread_lock=True)
+    demo.block_thread()
