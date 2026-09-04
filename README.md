@@ -21,22 +21,30 @@ Built as a project across all seven chapters of *파이썬을 이용한 화학 �
 
 ## What this project found
 
-Six results, each measured rather than assumed:
+Seven results, each measured rather than assumed:
 
 | # | Finding | Number |
 |---|---|---|
 | 1 | **QM features add nothing** to solubility prediction once fingerprints and descriptors are in hand | 3 of 4 models inside the CI; the 4th fails its controls |
 | 2 | **Random splits inflate accuracy by ~half an RMSE unit** | 0.900 → 0.595, +51% |
 | 3 | **XGBoost beats the neural network decisively** at this data size | 0.900 vs 1.311 |
-| 4 | **A graph network does not rescue it** | 1.021, and 151 parameters per training molecule |
+| 4 | **A graph network does not rescue it**, and 10× more data does not close the gap | 1.021 on ESOL; gap +0.32 → +0.37 from n=1k to 10k |
+| 4b | **Sum pooling extrapolates off a cliff** when the test set is larger than training — the single biggest effect found | 0.7 RMSE, and predictions at 10⁻³² mol/L |
 | 5 | **The noise floor is ~0.34 log units** — two curations of the same property disagree by that much | ESOL vs AqSolDB, n=668 |
 | 6 | **The free-electron model's success on butadiene is a coincidence** | +0.08 eV there, −1.91 eV by decapentaene |
 
-The one that took the most discipline was #1. Three models said "no
-effect", one said "QM helps" — and the interesting number is exactly the
-one that has to be attacked rather than published. Replacing the quantum
-features with Gaussian noise reproduced two-thirds of the gain, and
-molecular size alone reproduced nearly all of it.
+Two of these took discipline rather than effort. **#1**: three models
+said "no effect", one said "QM helps", and the interesting number is
+exactly the one that has to be attacked rather than published —
+Gaussian noise reproduced two-thirds of that gain and molecular size
+nearly all of it. **#4b**: the learning curve first showed the GNN
+getting *worse* with more data, which would have been a striking
+finding and was entirely my own bug. Chasing it down produced the
+largest single effect in the project.
+
+One claim was **withdrawn**: that graph networks start winning around
+10⁵ molecules. It was an assumption, the curve does not support it, and
+a flat gap is not evidence for a crossover further out.
 
 Six real bugs surfaced by running things rather than reading them: a
 dead dataset URL, an under-regularized ridge baseline that scored worse
@@ -146,17 +154,83 @@ know before spending a week on Ch 4.
 **The graph network does not rescue it.** A from-scratch message-passing
 GNN (`src/qmprop/gnn.py`, ~80 lines of torch, no torch-geometric) reaches
 1.021 — better than the MLP and ridge, still 0.12 behind plain XGBoost on
-fingerprints. At 114,721 parameters for 759 training molecules that is
-**151 parameters per molecule**, and no amount of architecture fixes that
-ratio. Graph networks start winning around 10⁵ molecules; below that the
-inductive bias does not pay for the capacity. Running it was still worth
-it — a null result you measured is worth more than one you assumed.
+fingerprints.
+
+I originally wrote here that graph networks "start winning around 10⁵
+molecules" and that below that the inductive bias does not pay for the
+capacity. **That was an assumption, and the measurement does not support
+it.** `make scale` runs the same comparison across a 10× range of the
+ESOL+AqSolDB union, scaffold split at every point:
+
+| n | GNN | Random forest | XGBoost | gap |
+|---:|---:|---:|---:|---:|
+| 1,000 | 1.723 | 1.460 | 1.407 | +0.316 |
+| 2,500 | 1.712 | 1.409 | 1.316 | +0.395 |
+| 5,000 | 1.708 | 1.339 | 1.266 | +0.442 |
+| 9,980 | 1.608 | 1.324 | 1.235 | +0.373 |
+
+Ten times the data buys the GNN 0.115 RMSE and XGBoost 0.172 — the gap
+does not close, it drifts slightly wider. If capacity starvation were
+the explanation, that gap would narrow monotonically. Extrapolating a
+crossover at 10⁵ from a flat curve is not something this data supports,
+so the claim is withdrawn rather than restated with a bigger number.
+
+What *did* move the GNN by 0.7 RMSE was a single architectural detail:
+sum versus mean pooling. See the next section — it is the more useful
+finding, and it is the one I would have missed by reporting the
+learning curve at face value.
 
 A footnote on the ridge row: with a fixed `alpha=1.0` it scored RMSE 2.141
 and **R² −0.087** — worse than predicting the mean. At 2247 features on
 893 samples a fixed penalty is badly under-regularized. `models.py` uses
 `RidgeCV`/`LassoCV`/`ElasticNetCV` so the linear arm is a real baseline
 rather than a strawman.
+
+---
+
+## The finding I nearly reported backwards
+
+The learning curve first came out with the GNN getting *worse* as data
+grew — 1.79 → 1.82 → 2.06. That is almost never an architectural result,
+so it got investigated instead of written up. Two causes, both mine.
+
+The subprocess worker had no early stopping, no LR schedule, no
+validation split and no best-checkpoint restore, where `08_gnn.py` has
+all four. Fixing that made it **worse** (2.40), which was the useful
+clue: validation RMSE was **1.356**, competitive with XGBoost's 1.266,
+while test was 2.400. A model that validates at 1.36 is not undertrained.
+
+The cause is **sum pooling meeting a scaffold split**. Scaffold
+splitting puts the big common scaffold groups in training and leaves
+rare, larger molecules for test:
+
+| split | n | mean heavy atoms | p95 | max |
+|---|---:|---:|---:|---:|
+| fit | 3400 | 14.3 | 28 | 99 |
+| val | 600 | 21.1 | 40 | 67 |
+| test | 1000 | **25.0** | **57** | **185** |
+
+A quarter of test molecules exceed the fit set's 95th percentile. A
+sum-pooled readout scales with atom count, so those arrive an order of
+magnitude outside anything it has seen:
+
+| pooling | val | test | R² | predicted range |
+|---|---:|---:|---:|---|
+| sum | 1.407 | 2.359 | −0.104 | **[−32.5, +1.3]** |
+| mean | 1.407 | **1.670** | **+0.447** | [−14.1, +1.4] |
+
+True range is [−13.2, +1.4]. **−32.5 log units is 10⁻³² mol/L**, which
+is not a solubility. The identical validation scores are the whole
+point: validation molecules sit inside the training size distribution,
+so this failure is completely invisible there, and only a test set drawn
+from rarer scaffolds exposes it.
+
+**But mean is not simply better.** On ESOL, where molecules are
+uniformly small, sum wins by 30% (0.998 vs 1.422) because extensivity
+is the right prior. The two options fail in opposite directions, so
+pooling is a documented parameter with both measurements rather than a
+silent default. Check whether your test molecules can be larger than
+your training ones — validation will not tell you.
 
 ---
 

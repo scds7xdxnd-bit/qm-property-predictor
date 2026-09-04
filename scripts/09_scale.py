@@ -51,6 +51,11 @@ def main() -> None:
     ap.add_argument("--sizes", type=int, nargs="*",
                     default=[1000, 2000, 4000, 8000, 10000])
     ap.add_argument("--no-gnn", action="store_true")
+    # mean, not the library default of sum. The enriched set spans 3 to
+    # 388 heavy atoms and a scaffold split leaves the larger molecules in
+    # test, where a sum-pooled readout extrapolates to nonsense
+    # (-32 log units). See the pooling table in qmprop/gnn.py.
+    ap.add_argument("--pooling", default="mean", choices=["sum", "mean"])
     ap.add_argument("--gnn-epochs", type=int, default=120)
     args = ap.parse_args()
 
@@ -84,7 +89,8 @@ def main() -> None:
                      met["rmse"], met["r2"])
 
         if not args.no_gnn:
-            met = run_gnn(smiles, y, tr, te, seed, args.gnn_epochs)
+            met = run_gnn(smiles, y, tr, te, seed, args.gnn_epochs,
+                          args.pooling)
             met.update(model="gnn", n=len(sub), n_train=len(tr))
             rows.append(met)
             log.info("n=%-6d %-14s RMSE %.3f  R2 %.3f", len(sub), "gnn",
@@ -93,7 +99,7 @@ def main() -> None:
     report(rows, cfg)
 
 
-def run_gnn(smiles, y, tr, te, seed, epochs):
+def run_gnn(smiles, y, tr, te, seed, epochs, pooling="sum"):
     """Hand the GNN to a separate process. See scripts/_gnn_worker.py --
     torch and xgboost each bundle a libomp, and sharing a process
     deadlocks them on macOS."""
@@ -107,6 +113,7 @@ def run_gnn(smiles, y, tr, te, seed, epochs):
             "smiles": list(smiles), "y": [float(v) for v in y],
             "train": [int(i) for i in tr], "test": [int(i) for i in te],
             "seed": int(seed), "epochs": int(epochs), "threads": 2,
+            "pooling": pooling,
         }))
         worker = pathlib.Path(__file__).resolve().parent / "_gnn_worker.py"
         proc = subprocess.run(

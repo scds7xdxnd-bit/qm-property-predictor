@@ -59,7 +59,7 @@ def main() -> None:
         [smiles[i] for i in tr], 0.85, 0.0, 0.15, seed)
     fit_idx, val_idx = tr[inner_fit], tr[inner_val]
 
-    model = build_gnn(seed=seed)
+    model = build_gnn(seed=seed, pooling=job.get("pooling", "sum"))
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, factor=0.5,
                                                        patience=15)
@@ -122,6 +122,7 @@ def main() -> None:
     met["params"] = sum(p.numel() for p in model.parameters())
     met["best_epoch"] = best_epoch
     met["val_rmse"] = round(best_rmse, 4)
+    met["pooling"] = job.get("pooling", "sum")
     Path(sys.argv[2]).write_text(json.dumps(met))
 
 
