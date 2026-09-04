@@ -13,17 +13,55 @@ essentials:
 
 Two design notes that matter for honesty:
 
-  * Sum pooling, not mean. Solubility is roughly extensive -- a bigger
-    molecule has more surface to solvate -- and mean-pooling throws away
-    size, which is one of the strongest signals in the data.
+  * Pooling is a real choice with no universally right answer, and the
+    two options fail in opposite directions. Measured, same protocol,
+    scaffold split both times:
+
+        dataset                    sum      mean
+        ESOL (1117, small mols)   0.998    1.422     <- sum wins by 30%
+        ESOL+AqSolDB (n=5000)     2.359    1.670     <- mean wins by 29%
+
+    Sum pooling encodes the right prior: solubility is roughly
+    extensive, and mean pooling throws that size signal away. On ESOL,
+    where molecules are uniformly small, that prior is worth 30%.
+
+    It becomes a liability the moment the test set is larger than the
+    training set -- and a scaffold split arranges exactly that, putting
+    the big common scaffold groups in training and leaving rare, larger
+    molecules for test. On the union at n=5000 the fit set averages 14
+    heavy atoms and the test set 25, a quarter of test molecules exceed
+    the fit set's 95th percentile, and one has 185 atoms. A sum-pooled
+    readout scales with atom count, so those arrive an order of
+    magnitude outside anything it has seen:
+
+        pooling   val RMSE   test RMSE   R^2      predicted range
+        sum         1.407      2.359    -0.104    [-32.5, +1.3]
+        mean        1.407      1.670    +0.447    [-14.1, +1.4]
+
+    True range is [-13.2, +1.4]. -32.5 log units is 10^-32 mol/L, which
+    is not a solubility. Note the identical validation scores: the
+    validation molecules sit inside the training size distribution, so
+    the failure is completely invisible there and only a test set drawn
+    from rarer scaffolds exposes it.
+
+    Default stays "sum" because it is what the reported ESOL result
+    used and it is the better prior when sizes are comparable. Pass
+    pooling="mean" whenever test molecules may be larger than training
+    ones -- and check that, rather than assuming, because validation
+    will not tell you.
+
   * The bond type enters as a separate weight matrix per bond order, the
     cheap version of edge conditioning. Without it the network cannot
     tell a single bond from a double, which for solubility matters.
 
-This is not expected to beat XGBoost on 893 training molecules, and it
-does not. Graph networks earn their keep at 10^5 molecules and up; below
-that the inductive bias does not pay for the parameters. Reporting that
-plainly is the honest version of the Ch 4 comparison.
+This does not beat XGBoost at these dataset sizes, and the reason is
+worth stating carefully rather than reaching for the usual explanation.
+"Graph networks need 10^5 molecules" was an assumption, not a
+measurement; on the learning curve here the gap does not close the way
+that story predicts. What *did* move the number by 0.7 RMSE was the
+pooling choice above -- and in whichever direction the size distributions
+happened to point. Architecture details that look like footnotes can
+dominate the data-quantity effect everyone reaches for first.
 """
 
 from __future__ import annotations
@@ -122,7 +160,8 @@ def collate(graphs: list):
     )
 
 
-def build_gnn(hidden: int = 96, rounds: int = 3, seed: int = 42):
+def build_gnn(hidden: int = 96, rounds: int = 3, seed: int = 42,
+              pooling: str = "sum"):
     """Construct the model. Imported lazily so torch stays optional."""
     import torch
     import torch.nn as nn
@@ -143,6 +182,9 @@ def build_gnn(hidden: int = 96, rounds: int = 3, seed: int = 42):
                 nn.Dropout(0.1), nn.Linear(hidden, 1),
             )
             self.rounds = rounds
+            if pooling not in ("sum", "mean"):
+                raise ValueError(f"unknown pooling {pooling!r}")
+            self.pooling = pooling
 
         def forward(self, x, edge_index, edge_kind, batch_index, n_graphs):
             h = torch.relu(self.embed(x))
@@ -162,7 +204,12 @@ def build_gnn(hidden: int = 96, rounds: int = 3, seed: int = 42):
                 h = self.update(messages, h)
 
             pooled = torch.zeros(n_graphs, h.shape[1], device=h.device)
-            pooled.index_add_(0, batch_index, h)      # sum pooling, see docstring
+            pooled.index_add_(0, batch_index, h)
+            if self.pooling == "mean":
+                counts = torch.zeros(n_graphs, device=h.device)
+                counts.index_add_(0, batch_index,
+                                  torch.ones(len(batch_index), device=h.device))
+                pooled = pooled / counts.clamp(min=1).unsqueeze(-1)
             return self.readout(pooled).squeeze(-1)
 
     return MPNN()

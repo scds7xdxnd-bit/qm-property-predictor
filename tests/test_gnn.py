@@ -115,3 +115,39 @@ def test_sum_pooling_makes_size_visible():
         b = model(torch.tensor(two[0]), torch.tensor(two[1]),
                   torch.tensor(two[2]), torch.tensor(two[3]), 1)
     assert not torch.allclose(a, b)
+
+
+def test_mean_pooling_is_invariant_to_molecule_size():
+    """The property that makes mean pooling survive a size shift.
+
+    Two disconnected copies of the same molecule have twice the atoms
+    and identical per-atom structure. Mean pooling gives the same
+    readout; sum pooling gives roughly double, which is exactly why a
+    sum-pooled model extrapolates off a cliff when the test set is
+    larger than the training set (see the module docstring).
+    """
+    torch = pytest.importorskip("torch")
+    from qmprop.gnn import build_gnn
+
+    one = collate([mol_to_graph("c1ccccc1")])
+    two = collate([mol_to_graph("c1ccccc1.c1ccccc1")])
+
+    def run(model, packed):
+        x, e, k, b = packed
+        with torch.no_grad():
+            return model(torch.tensor(x), torch.tensor(e), torch.tensor(k),
+                         torch.tensor(b), 1).item()
+
+    mean_model = build_gnn(seed=5, pooling="mean").eval()
+    assert run(mean_model, one) == pytest.approx(run(mean_model, two), abs=1e-4)
+
+    sum_model = build_gnn(seed=5, pooling="sum").eval()
+    assert run(sum_model, one) != pytest.approx(run(sum_model, two), abs=1e-4)
+
+
+def test_pooling_rejects_unknown_mode():
+    pytest.importorskip("torch")
+    from qmprop.gnn import build_gnn
+
+    with pytest.raises(ValueError, match="pooling"):
+        build_gnn(pooling="max")
