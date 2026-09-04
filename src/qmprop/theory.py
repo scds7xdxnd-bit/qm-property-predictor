@@ -227,8 +227,14 @@ def polyene_box_length(n_carbons: int, bond_angstrom: float = CONJUGATED_BOND_AN
 
     The chain has n-1 bonds; the convention is to let the electron cloud
     spill half a bond past each terminal carbon, giving (n-1) + 1 = n
-    bond lengths total. That overhang is a fudge, and it is doing real
-    work -- drop it and the predicted gaps come out roughly 30% too wide.
+    bond lengths total.
+
+    That overhang is a fudge, and it is doing most of the work. Measured
+    (see the table in `scripts/06_theory.py`), dropping it widens the
+    predicted gaps by 78% for butadiene, 44% for hexatriene, 31% for
+    octatetraene and 23% for decapentaene -- the correction is largest
+    exactly where the model appears to succeed. Butadiene's famous
+    agreement is calibration, not prediction.
     """
     if n_carbons < 2:
         raise ValueError("need at least two carbons to have a conjugated chain")
