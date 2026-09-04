@@ -316,10 +316,39 @@ says the geometry, the basis, and the unit conversion are all correct.
 A wrong Angstrom/Bohr conversion or a broken conformer would miss by a
 factor, not by 2%.
 
+### Why the subset takes ~45 minutes and not 6 hours
+
+The run uses density fitting (RI-J), which factors the four-index
+Coulomb integrals through an auxiliary basis. Measured on a
+17-heavy-atom sulfone, one process:
+
+| | time | energy (Ha) | HOMO | gap | dipole |
+|---|---:|---:|---:|---:|---:|
+| exact | 251.3 s | −1122.559953 | −5.7603 | 5.0784 | 8.9588 |
+| RI-J | **47.8 s** | −1122.559930 | −5.7602 | 5.0791 | 8.9587 |
+
+**5.3× for 2.3×10⁻⁵ hartree.** The gap moves 0.0007 eV — four orders of
+magnitude below the spread of these features across the dataset, so
+nothing downstream can tell the difference. Set `qm.density_fit: false`
+if you ever need absolute energies rather than descriptors.
+
+Two smaller notes from the same measurements. `qm.max_memory_mb`
+matters more than it looks, because parallel workers multiply it: three
+workers swapping an 8 GB machine ran at ~8% of a core each while
+`kernel_task` burned a full core on memory compression. And the answers
+are identical at every memory budget (gap 5.0784, dipole 8.9588 to four
+decimals), so it is a memory knob, not an accuracy one.
+
 ## Honest limitations
 
 - **Single points on MMFF geometries**, not DFT-optimized structures.
   ~50× cheaper, fine for descriptors, not publishable as energetics.
+- **RI-J, not exact Coulomb integrals.** Verified negligible for these
+  descriptors (table above); would need rechecking for energetics.
+- **No iodine.** 6-31G\* has no basis functions for I, so those
+  molecules come back `ok=False` with a reason and drop out of the
+  subset. A documented gap in chemical coverage, not a silent one —
+  switch to def2-SVP if it matters for your target.
 - **Kohn–Sham orbital energies are not ionization potentials.** They
   correlate with reactivity, which is all a feature needs to do.
 - **One conformer per molecule.** Flexible molecules deserve a Boltzmann
