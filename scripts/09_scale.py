@@ -24,6 +24,9 @@ import json
 import logging
 import time
 
+import pathlib
+import sys
+
 import numpy as np
 import pandas as pd
 
@@ -91,50 +94,29 @@ def main() -> None:
 
 
 def run_gnn(smiles, y, tr, te, seed, epochs):
-    import torch
+    """Hand the GNN to a separate process. See scripts/_gnn_worker.py --
+    torch and xgboost each bundle a libomp, and sharing a process
+    deadlocks them on macOS."""
+    import subprocess
+    import tempfile
 
-    from qmprop.gnn import build_gnn, collate, mol_to_graph
-
-    torch.set_num_threads(2)     # the QM run may still own the other cores
-    graphs = [mol_to_graph(s) for s in smiles]
-    keep = [i for i, g in enumerate(graphs) if g is not None]
-    valid = set(keep)
-    tr = np.array([i for i in tr if i in valid])
-    te = np.array([i for i in te if i in valid])
-
-    model = build_gnn(seed=seed)
-    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = torch.nn.MSELoss()
-    rng = np.random.default_rng(seed)
-
-    t0 = time.time()
-    for _ in range(epochs):
-        model.train()
-        order = rng.permutation(tr)
-        for s in range(0, len(order), 32):
-            chunk = order[s:s + 32]
-            x, e, k, b = collate([graphs[i] for i in chunk])
-            opt.zero_grad()
-            out = model(torch.tensor(x), torch.tensor(e), torch.tensor(k),
-                        torch.tensor(b), len(chunk))
-            loss = loss_fn(out, torch.tensor(y[chunk], dtype=torch.float32))
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-            opt.step()
-
-    model.eval()
-    preds = np.zeros(len(te))
-    with torch.no_grad():
-        for s in range(0, len(te), 64):
-            chunk = te[s:s + 64]
-            x, e, k, b = collate([graphs[i] for i in chunk])
-            preds[s:s + len(chunk)] = model(
-                torch.tensor(x), torch.tensor(e), torch.tensor(k),
-                torch.tensor(b), len(chunk)).numpy()
-
-    met = regression_metrics(y[te], preds)
-    met["seconds"] = round(time.time() - t0, 1)
-    return met
+    with tempfile.TemporaryDirectory() as tmp:
+        job = pathlib.Path(tmp) / "job.json"
+        out = pathlib.Path(tmp) / "out.json"
+        job.write_text(json.dumps({
+            "smiles": list(smiles), "y": [float(v) for v in y],
+            "train": [int(i) for i in tr], "test": [int(i) for i in te],
+            "seed": int(seed), "epochs": int(epochs), "threads": 2,
+        }))
+        worker = pathlib.Path(__file__).resolve().parent / "_gnn_worker.py"
+        proc = subprocess.run(
+            [sys.executable, str(worker), str(job), str(out)],
+            capture_output=True, text=True)
+        if proc.returncode != 0 or not out.exists():
+            log.error("GNN worker failed (rc=%s):\n%s", proc.returncode,
+                      proc.stderr[-2000:])
+            raise RuntimeError("GNN worker failed")
+        return json.loads(out.read_text())
 
 
 def report(rows, cfg) -> None:
