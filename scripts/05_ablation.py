@@ -5,24 +5,35 @@ The question the project exists to answer: once a model already has
 fingerprints and cheap RDKit descriptors, do B3LYP orbital energies add
 anything, or is the physics already implicit in the structure?
 
-Design note, and the thing most ablations get wrong: every arm is scored
-on EXACTLY the same molecules and the same scaffold split -- the subset
-for which QM succeeded. Comparing a QM arm on 180 small molecules to a
-fingerprint arm on all 1117 would measure the subset, not the features.
+Three design decisions, each fixing a way this experiment is usually
+gotten wrong:
 
-Because the arms share a test set, the comparison is PAIRED, and the
-significance test has to be too. An earlier version quoted
-1.96*sigma_y/sqrt(n) as the noise floor, which is the confidence interval
-for the mean of y -- a different quantity, and far too wide here: two
-models scored on the same molecules make correlated errors, and the
-uncertainty on their *difference* is much smaller than the uncertainty on
-either one alone. Using the wrong interval would hide a real effect. So
-the delta is bootstrapped by resampling molecules and recomputing both
-RMSEs on the same resample.
+1. **Same molecules in every arm.** Every arm is scored on exactly the
+   subset for which QM converged. Comparing a QM arm on 180 small
+   molecules to a fingerprint arm on all 1117 would measure the subset,
+   not the features.
+
+2. **Scaffold k-fold, not one split.** A single 80/20 split of a
+   200-molecule subset leaves ~40 test molecules, which cannot resolve
+   the effect being looked for. Rotating folds gives an out-of-fold
+   prediction for every molecule -- 5x the comparison data for a
+   training cost measured in seconds. Scaffold groups stay whole, so
+   each fold is still an honest test.
+
+3. **A paired test, because the arms share a test set.** An earlier
+   version quoted 1.96*sigma_y/sqrt(n) as the noise floor, which is the
+   confidence interval for the mean of y -- a different quantity, and
+   far too wide: two models scored on the same molecules make correlated
+   errors, so the uncertainty on their *difference* is much smaller. The
+   delta is bootstrapped by resampling molecules and recomputing both
+   RMSEs on each resample.
 
     python scripts/05_ablation.py
+    python scripts/05_ablation.py --folds 10
+    python scripts/05_ablation.py --single-split   # the old 80/20
 """
 
+import argparse
 import json
 import logging
 
@@ -35,7 +46,7 @@ from qmprop.evaluate import format_table, parity_plot, regression_metrics
 from qmprop.features import build_features
 from qmprop.models import build_model
 from qmprop.qm import QM_FEATURE_NAMES
-from qmprop.splits import get_split
+from qmprop.splits import get_split, scaffold_kfold
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("ablation")
@@ -50,8 +61,30 @@ ARMS = {
     "fingerprint+desc+qm":    dict(use_morgan=True,  use_descriptors=True,  use_qm=True),
 }
 
+BASE_ARM = "fingerprint+desc"
+QM_ARM = "fingerprint+desc+qm"
+
+
+def out_of_fold(model_name, X, y, folds, seed):
+    """Train once per fold, predict the held-out fold. Returns predictions
+    for every molecule, each made by a model that never saw it."""
+    pred = np.full(len(y), np.nan)
+    for train_idx, test_idx in folds:
+        model = build_model(model_name, seed=seed)
+        model.fit(X[train_idx], y[train_idx])
+        pred[test_idx] = model.predict(X[test_idx])
+    assert not np.isnan(pred).any(), "a molecule was never in a test fold"
+    return pred
+
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--folds", type=int, default=5)
+    ap.add_argument("--single-split", action="store_true",
+                    help="one 80/20 scaffold split instead of k-fold "
+                         "(faster, far less statistical power)")
+    args = ap.parse_args()
+
     cfg = load_config()
     target = cfg["dataset"]["target_name"]
     scfg = cfg["split"]
@@ -60,31 +93,40 @@ def main() -> None:
 
     qm_path = cfg["data_dir"] / "interim" / "qm_descriptors.csv"
     if not qm_path.exists():
-        raise SystemExit(
-            f"{qm_path} not found -- run scripts/03_run_qm.py first"
-        )
+        raise SystemExit(f"{qm_path} not found -- run scripts/03_run_qm.py first")
 
     qm = pd.read_csv(qm_path)
+    n_attempted = len(qm)
     qm = qm[qm["ok"]].drop_duplicates(subset="smiles")
-    log.info("%d molecules with converged QM", len(qm))
+    log.info("%d/%d molecules with converged QM", len(qm), n_attempted)
+    if n_attempted > len(qm):
+        reasons = pd.read_csv(qm_path)
+        failed = reasons[~reasons["ok"]]["reason"].value_counts()
+        for reason, n in failed.items():
+            log.info("  %d failed: %s", n, str(reason)[:70])
 
     # Inner join is what enforces "same rows in every arm".
     merged = df.merge(qm[["smiles", *QM_FEATURE_NAMES]], on="smiles", how="inner")
     if len(merged) < 50:
-        log.warning(
-            "only %d molecules -- results will be noisy; raise qm.subset_size",
-            len(merged),
-        )
+        log.warning("only %d molecules -- results will be noisy; "
+                    "raise qm.subset_size", len(merged))
 
     smiles = merged["smiles"].tolist()
     y = merged[target].to_numpy(dtype=float)
     qm_matrix = merged[QM_FEATURE_NAMES].to_numpy(dtype=np.float32)
 
-    train_idx, _, test_idx = get_split(scfg["method"])(
-        smiles, scfg["frac_train"], scfg["frac_valid"], scfg["frac_test"],
-        scfg["seed"],
-    )
-    log.info("split: %d train / %d test", len(train_idx), len(test_idx))
+    if args.single_split:
+        train_idx, _, test_idx = get_split(scfg["method"])(
+            smiles, scfg["frac_train"], scfg["frac_valid"], scfg["frac_test"],
+            scfg["seed"])
+        folds = [(train_idx, test_idx)]
+        scored = test_idx
+        log.info("single split: %d train / %d test", len(train_idx), len(test_idx))
+    else:
+        folds = scaffold_kfold(smiles, args.folds, scfg["seed"])
+        scored = np.arange(len(smiles))
+        log.info("%d-fold scaffold CV over %d molecules (fold sizes %s)",
+                 args.folds, len(smiles), [len(t) for _, t in folds])
 
     out_dir = cfg["output_dir"]
     (out_dir / "figures").mkdir(parents=True, exist_ok=True)
@@ -92,7 +134,7 @@ def main() -> None:
     rows = []
     predictions: dict[tuple[str, str], np.ndarray] = {}
     for arm, flags in ARMS.items():
-        X, names = build_features(
+        X, _ = build_features(
             smiles,
             use_morgan=flags["use_morgan"],
             use_descriptors=flags["use_descriptors"],
@@ -103,86 +145,87 @@ def main() -> None:
         )
 
         for model_name in cfg["models"]:
-            model = build_model(model_name, seed=scfg["seed"])
-            model.fit(X[train_idx], y[train_idx])
-            pred = model.predict(X[test_idx])
-
-            m = regression_metrics(y[test_idx], pred)
+            pred = out_of_fold(model_name, X, y, folds, scfg["seed"])
+            m = regression_metrics(y[scored], pred[scored])
             m.update(arm=arm, model=model_name, n_features=X.shape[1])
             rows.append(m)
             predictions[(arm, model_name)] = pred
             log.info("%-22s %-14s RMSE %.3f  R2 %6.3f  (%d feats)",
                      arm, model_name, m["rmse"], m["r2"], X.shape[1])
 
-            if arm == "fingerprint+desc+qm":
-                parity_plot(
-                    y[test_idx], pred,
-                    title=f"{model_name} · +QM · {target}",
-                    path=out_dir / "figures" / f"ablation_qm_{model_name}.png",
-                )
+            if arm == QM_ARM:
+                parity_plot(y[scored], pred[scored],
+                            title=f"{model_name} · +QM · {target}",
+                            path=out_dir / "figures" / f"ablation_qm_{model_name}.png")
 
     print("\n" + format_table(
-        [{
-            "arm": r["arm"], "model": r["model"],
-            "features": r["n_features"],
-            "rmse": f"{r['rmse']:.3f}", "mae": f"{r['mae']:.3f}",
-            "r2": f"{r['r2']:.3f}",
-        } for r in rows],
+        [{"arm": r["arm"], "model": r["model"], "features": r["n_features"],
+          "rmse": f"{r['rmse']:.3f}", "mae": f"{r['mae']:.3f}",
+          "r2": f"{r['r2']:.3f}"} for r in rows],
         ["arm", "model", "features", "rmse", "mae", "r2"],
     ))
 
     # The headline: per model, what did QM buy?
-    y_test = y[test_idx]
+    y_scored = y[scored]
     rng = np.random.default_rng(scfg["seed"])
-    verdicts = []
+    verdicts, deltas_out = [], {}
 
-    print(f"\nQM delta: does adding 8 quantum features to fingerprints+descriptors help?")
-    print(f"(negative = QM helped. {N_BOOTSTRAP:,} paired bootstrap resamples, 95% CI)\n")
-    print(f"{'model':<16}{'base':>8}{'+QM':>8}{'delta':>9}{'95% CI':>18}  verdict")
-    print("-" * 74)
+    print(f"\nQM delta: 8 quantum features on top of fingerprints+descriptors")
+    print(f"(negative = QM helped; {N_BOOTSTRAP:,} paired bootstrap resamples, 95% CI)\n")
+    print(f"{'model':<16}{'base':>8}{'+QM':>8}{'delta':>9}{'95% CI':>19}  verdict")
+    print("-" * 76)
 
     for model_name in cfg["models"]:
-        base_pred = predictions.get(("fingerprint+desc", model_name))
-        qm_pred = predictions.get(("fingerprint+desc+qm", model_name))
+        base_pred = predictions.get((BASE_ARM, model_name))
+        qm_pred = predictions.get((QM_ARM, model_name))
         if base_pred is None or qm_pred is None:
             continue
 
-        base_err = base_pred - y_test
-        qm_err = qm_pred - y_test
+        base_err = base_pred[scored] - y_scored
+        qm_err = qm_pred[scored] - y_scored
         rmse = lambda e: float(np.sqrt(np.mean(e**2)))
         delta = rmse(qm_err) - rmse(base_err)
 
-        # Resample MOLECULES, not residuals, and score both arms on the
-        # same resample -- that is what makes the test paired.
-        idx = rng.integers(0, len(y_test), size=(N_BOOTSTRAP, len(y_test)))
-        deltas = (np.sqrt((qm_err[idx] ** 2).mean(axis=1))
-                  - np.sqrt((base_err[idx] ** 2).mean(axis=1)))
-        lo, hi = np.percentile(deltas, [2.5, 97.5])
+        # Resample MOLECULES and score both arms on the same resample --
+        # that is what makes the test paired.
+        idx = rng.integers(0, len(y_scored), size=(N_BOOTSTRAP, len(y_scored)))
+        boot = (np.sqrt((qm_err[idx] ** 2).mean(axis=1))
+                - np.sqrt((base_err[idx] ** 2).mean(axis=1)))
+        lo, hi = (float(v) for v in np.percentile(boot, [2.5, 97.5]))
 
-        if hi < 0:
-            verdict = "QM helps"
-        elif lo > 0:
-            verdict = "QM hurts"
-        else:
-            verdict = "no measurable effect"
+        verdict = "QM helps" if hi < 0 else "QM hurts" if lo > 0 else "no measurable effect"
         verdicts.append(verdict)
+        deltas_out[model_name] = {"base_rmse": rmse(base_err),
+                                  "qm_rmse": rmse(qm_err), "delta": delta,
+                                  "ci_low": lo, "ci_high": hi, "verdict": verdict}
 
         print(f"{model_name:<16}{rmse(base_err):>8.3f}{rmse(qm_err):>8.3f}"
-              f"{delta:>+9.3f}{f'[{lo:+.3f}, {hi:+.3f}]':>18}  {verdict}")
+              f"{delta:>+9.3f}{f'[{lo:+.3f}, {hi:+.3f}]':>19}  {verdict}")
 
-    print(f"\n  n = {len(y_test)} test molecules, {len(train_idx)} training.")
+    width = np.mean([d["ci_high"] - d["ci_low"] for d in deltas_out.values()]) \
+        if deltas_out else float("nan")
+    print(f"\n  n = {len(y_scored)} molecules scored out-of-fold.")
+    print(f"  Mean 95% CI width on the delta: {width:.3f} log units.")
+
     if verdicts and all(v == "no measurable effect" for v in verdicts):
-        print("  Every interval straddles zero: on this target, at this sample")
+        print("\n  Every interval straddles zero. On this target, at this sample")
         print("  size, QM features add nothing measurable on top of cheap ones.")
-        print("  That is a real finding, not a failed experiment -- solubility is")
+        print("  That is a real finding, not a failed experiment: solubility is")
         print("  dominated by polarity and H-bonding, which TPSA and LogP already")
         print("  encode. Report it as a null result, with the honest caveat that")
-        print(f"  {len(y_test)} test molecules cannot resolve an effect smaller than")
-        print("  the intervals above -- absence of evidence at this n, not proof")
-        print("  of absence.")
+        print(f"  an effect smaller than ~{width / 2:.2f} log units could not have been")
+        print("  seen here -- absence of evidence at this n, not proof of absence.")
+    elif any(v == "QM helps" for v in verdicts):
+        print("\n  At least one model improved beyond the interval. Before")
+        print("  believing it: molecule size correlates with both QM cost and")
+        print("  solubility, so check that size did not enter as a confound.")
 
+    payload = {"metrics": rows, "qm_delta": deltas_out,
+               "n_scored": int(len(y_scored)),
+               "evaluation": "single 80/20 scaffold split" if args.single_split
+               else f"{args.folds}-fold scaffold CV"}
     path = out_dir / "ablation.json"
-    path.write_text(json.dumps(rows, indent=2))
+    path.write_text(json.dumps(payload, indent=2))
     print(f"\nwrote {path}")
 
 
