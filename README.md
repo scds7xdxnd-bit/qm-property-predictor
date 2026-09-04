@@ -61,7 +61,7 @@ make qm         # B3LYP/6-31G* single points                 SLOW
 make ablation   # the actual question                        ~3 min
 make explain Q='caffeine'   # Ch 7, explained prediction
 make app        # Gradio predictor
-make test       # pytest (76 tests)
+make test       # pytest (102 tests)
 make all        # everything except qm and ablation
 ```
 
@@ -383,7 +383,7 @@ conformer ensemble; ωB97X-D for dispersion.
 config.yaml           every knob, one file
 src/qmprop/
   data.py             download, canonicalize, dedupe by InChIKey
-  external.py         AqSolDB, PubChem, ChEMBL  (Ch 2, and Ch 7's front door)
+  external.py         AqSolDB, PubChem, ChEMBL, the enriched union   (Ch 2)
   features.py         descriptors + ECFP, assembled into blocks
   splits.py           scaffold split (the correction that matters)
   theory.py           box + oscillator, analytic and numerical  (Ch 5)
@@ -402,9 +402,10 @@ scripts/
   06_theory.py        Ch 5 solvers and the polyene breakdown
   07_explain.py       Ch 7 CLI
   08_gnn.py           Ch 4 stretch goal
+  09_scale.py         learning curve on 9x the data (tests a README claim)
 notebooks/            Colab quickstart
 app/app.py            Gradio predictor, name lookup + explanation
-tests/                pytest — 76 tests
+tests/                pytest — 102 tests
 ```
 
 ## Data

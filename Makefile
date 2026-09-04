@@ -1,4 +1,4 @@
-.PHONY: help setup data features chemspace theory qm train gnn ablation explain app test all clean
+.PHONY: help setup data features chemspace theory qm train gnn ablation explain scale app test all clean
 
 help:
 	@echo "Ch 2  make data       download + clean ESOL             (~10 s)"
@@ -10,6 +10,7 @@ help:
 	@echo "Ch 4  make gnn        message-passing GNN               (~10 min)"
 	@echo "Ch 6  make ablation   does QM actually help?            (needs qm)"
 	@echo "Ch 7  make explain Q='caffeine'   explained prediction"
+	@echo "Ch 2+4 make scale     does 9x more data change the verdict? (~1 h)"
 	@echo "      make app        launch the Gradio predictor"
 	@echo "      make test       pytest"
 	@echo "      make all        everything except qm and ablation"
@@ -46,6 +47,10 @@ ablation: features
 Q ?= caffeine
 explain: features
 	python scripts/07_explain.py "$(Q)"
+
+# Tests the README's own claim that the GNN loses for want of data.
+scale: data
+	python scripts/09_scale.py
 
 app:
 	python app/app.py
