@@ -108,10 +108,26 @@ def qm_descriptors(
     max_heavy_atoms: int = 20,
     conformer_seed: int = 0xF00D,
     mmff_max_iters: int = 500,
+    max_memory_mb: int = 900,
 ) -> QMResult:
     """Compute QM features for one molecule. Never raises -- failures
     come back as `ok=False` with a reason, so a batch run does not die
-    on molecule 137 of 200."""
+    on molecule 137 of 200.
+
+    `max_memory_mb` is the one knob worth understanding. PySCF's default
+    is 4000 MB, and it will happily store the whole two-electron integral
+    tensor if it believes that fits. For 6-31G* on 20 heavy atoms that is
+    ~250 basis functions, and 250^4/8 doubles is about 3.9 GB -- so it
+    decides it fits, allocates it, and three parallel workers ask an 8 GB
+    laptop for 10 GB. Measured here: resident sets of 2.6-3.6 GB per
+    worker, kernel_task pinned at ~95% running the memory compressor, and
+    each worker getting 8% of a core.
+
+    Setting a small budget makes PySCF fall back to direct SCF, which
+    recomputes integrals instead of storing them. More arithmetic, far
+    less memory, and on a machine that would otherwise swap it is faster
+    by a wide margin. Raise it if you have the RAM.
+    """
     mol2d = Chem.MolFromSmiles(smiles)
     if mol2d is None:
         return QMResult(smiles=smiles, ok=False, reason="unparseable SMILES")
@@ -146,10 +162,12 @@ def qm_descriptors(
                 spin=n_radical,   # 2S, i.e. count of unpaired electrons
                 verbose=0,
                 unit="Angstrom",
+                max_memory=max_memory_mb,
             )
 
             mf = dft.UKS(pyscf_mol) if n_radical else dft.RKS(pyscf_mol)
             mf.xc = xc
+            mf.max_memory = max_memory_mb
             energy = mf.kernel()
 
         if not mf.converged:
