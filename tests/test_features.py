@@ -91,3 +91,47 @@ def test_single_molecule_matches_training_feature_count():
 def test_drop_degenerate_can_be_forced_off():
     X, names = descriptor_matrix(["CCO"], drop_degenerate=False)
     assert X.shape[0] == 1 and X.shape[1] == len(names) > 100
+
+
+def test_descriptors_never_contain_inf_after_float32_cast():
+    """Regression: Ipc is finite in float64 and overflows float32.
+
+    The filter used to test finiteness on the float64 array and cast to
+    float32 afterwards, so a column holding 4e54 passed the check and
+    arrived as inf. It surfaced much later, from inside sklearn, as
+    "Input X contains infinity" -- and only on datasets containing
+    molecules larger than ESOL's. Eight molecules in the ESOL+AqSolDB
+    union trigger it; the worst reaches Ipc = 8.3e158.
+    """
+    import numpy as np
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors
+
+    from qmprop.features import descriptor_matrix
+
+    # Twelve anthracenes as separate components: Ipc = 4.0e54, sixteen
+    # orders of magnitude past float32's 3.4e38 ceiling.
+    big = ".".join(["c1ccc2c(c1)ccc1c2cccc1"] * 12)
+    assert float(Descriptors.Ipc(Chem.MolFromSmiles(big))) > np.finfo(np.float32).max, (
+        "premise of the test: this molecule must overflow float32 Ipc"
+    )
+
+    X, names = descriptor_matrix(["CCO", "c1ccccc1", big])
+    assert np.isfinite(X).all(), "non-finite value survived the filter"
+    assert X.dtype == np.float32
+    assert "Ipc" not in names, "the overflowing column should be dropped"
+
+
+def test_explicit_names_path_also_survives_overflow():
+    """Inference passes explicit names, which skips the drop filter --
+    that path must zero-fill the overflow rather than emit inf, or a
+    single large query molecule crashes the deployed app."""
+    import numpy as np
+
+    from qmprop.features import descriptor_matrix
+
+    big = ".".join(["c1ccc2c(c1)ccc1c2cccc1"] * 12)
+    X, names = descriptor_matrix([big], names=["Ipc", "MolWt"])
+    assert np.isfinite(X).all()
+    assert names == ["Ipc", "MolWt"]
+    assert X.shape == (1, 2), "explicit names must preserve the column count"

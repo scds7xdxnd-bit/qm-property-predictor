@@ -76,9 +76,10 @@ def descriptor_matrix(
     """RDKit descriptor matrix.
 
     When selecting from the full catalogue (`names=None`), drops any
-    column that is constant or non-finite: a handful of RDKit
-    descriptors return inf or NaN on exotic structures and will silently
-    poison a linear model.
+    column that is constant or non-finite *in float32*: a handful of
+    RDKit descriptors return inf or NaN on exotic structures, and Ipc
+    overflows float32 outright on large molecules, either of which will
+    silently poison a linear model.
 
     That filter is TRAINING-TIME logic and must not run at inference.
     Applied to a single molecule every column has zero variance, so it
@@ -110,11 +111,20 @@ def descriptor_matrix(
     if drop_degenerate is None:
         drop_degenerate = names is None
 
-    if not drop_degenerate:
-        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-        return X.astype(np.float32), list(selected)
+    # Cast BEFORE testing finiteness, not after. A value can be perfectly
+    # finite in float64 and still overflow float32: RDKit's Ipc reaches
+    # 2.8e54 on a ~50-atom molecule, sixteen orders of magnitude past
+    # float32's 3.4e38 ceiling. Checking first and casting second lets
+    # that column pass the filter and arrive as inf, which surfaces much
+    # later as "Input X contains infinity" from inside sklearn. ESOL is
+    # small enough never to trigger it; AqSolDB is not.
+    with np.errstate(over="ignore"):
+        X32 = X.astype(np.float32)
 
-    finite = np.isfinite(X).all(axis=0)
+    if not drop_degenerate:
+        return np.nan_to_num(X32, nan=0.0, posinf=0.0, neginf=0.0), list(selected)
+
+    finite = np.isfinite(X32).all(axis=0)
     varying = np.nanstd(X, axis=0) > 0
     keep = finite & varying
     dropped = len(selected) - int(keep.sum())
@@ -122,7 +132,7 @@ def descriptor_matrix(
         log.info("dropped %d constant/non-finite descriptor columns", dropped)
 
     kept_names = [n for n, k in zip(selected, keep) if k]
-    return X[:, keep].astype(np.float32), kept_names
+    return X32[:, keep], kept_names
 
 
 def build_features(
