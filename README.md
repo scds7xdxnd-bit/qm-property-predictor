@@ -19,6 +19,34 @@ Built as a project across all seven chapters of *파이썬을 이용한 화학 �
 
 ---
 
+## What this project found
+
+Six results, each measured rather than assumed:
+
+| # | Finding | Number |
+|---|---|---|
+| 1 | **QM features add nothing** to solubility prediction once fingerprints and descriptors are in hand | 3 of 4 models inside the CI; the 4th fails its controls |
+| 2 | **Random splits inflate accuracy by ~half an RMSE unit** | 0.900 → 0.595, +51% |
+| 3 | **XGBoost beats the neural network decisively** at this data size | 0.900 vs 1.311 |
+| 4 | **A graph network does not rescue it** | 1.021, and 151 parameters per training molecule |
+| 5 | **The noise floor is ~0.34 log units** — two curations of the same property disagree by that much | ESOL vs AqSolDB, n=668 |
+| 6 | **The free-electron model's success on butadiene is a coincidence** | +0.08 eV there, −1.91 eV by decapentaene |
+
+The one that took the most discipline was #1. Three models said "no
+effect", one said "QM helps" — and the interesting number is exactly the
+one that has to be attacked rather than published. Replacing the quantum
+features with Gaussian noise reproduced two-thirds of the gain, and
+molecular size alone reproduced nearly all of it.
+
+Six real bugs surfaced by running things rather than reading them: a
+dead dataset URL, an under-regularized ridge baseline that scored worse
+than the mean, a `.gitignore` negation that could never match,
+inference-time feature drift, an empty SMILES that would have killed a
+200-molecule batch mid-run, and a config-passing bug that macOS `spawn`
+turned into silently-wrong physics.
+
+---
+
 ## Chapter coverage
 
 | Book chapter | Where it lives |
