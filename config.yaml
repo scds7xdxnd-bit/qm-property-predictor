@@ -2,7 +2,10 @@
 
 dataset:
   name: esol
-  url: https://deepchem.s3.us-west-1.amazonaws.com/datasets/delaney-processed.csv
+  # Tried in order -- the old DeepChem S3 bucket now 404s, so mirrors matter.
+  urls:
+    - https://raw.githubusercontent.com/deepchem/deepchem/master/datasets/delaney-processed.csv
+    - https://deepchem.s3.us-west-1.amazonaws.com/datasets/delaney-processed.csv
   smiles_column: smiles
   target_column: "measured log solubility in mols per litre"
   target_name: logS          # aqueous solubility, log10(mol/L)

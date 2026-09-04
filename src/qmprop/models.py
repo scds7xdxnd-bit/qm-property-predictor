@@ -13,8 +13,9 @@ GNN -- `build_model` is the only place that needs to change.
 
 from __future__ import annotations
 
+import numpy as np
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import ElasticNet, Lasso, Ridge
+from sklearn.linear_model import ElasticNetCV, LassoCV, RidgeCV
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -27,14 +28,22 @@ def _scaled(estimator) -> Pipeline:
 
 def build_model(name: str, seed: int = 42):
     """Return an unfitted estimator by name."""
+    # The linear models pick their own penalty by cross-validation on the
+    # training fold. A fixed alpha=1.0 is badly under-regularized at
+    # p >> n -- with 2247 features and ~900 samples it scores WORSE than
+    # predicting the mean on a scaffold split, which makes the linear
+    # baseline a strawman rather than a baseline.
     if name == "ridge":
-        return _scaled(Ridge(alpha=1.0))
+        return _scaled(RidgeCV(alphas=np.logspace(-1, 4, 30)))
 
     if name == "lasso":
-        return _scaled(Lasso(alpha=0.01, max_iter=10_000))
+        return _scaled(LassoCV(n_alphas=50, max_iter=20_000, n_jobs=-1,
+                               random_state=seed))
 
     if name == "elastic_net":
-        return _scaled(ElasticNet(alpha=0.01, l1_ratio=0.5, max_iter=10_000))
+        return _scaled(ElasticNetCV(n_alphas=30, l1_ratio=[0.1, 0.5, 0.9],
+                                    max_iter=20_000, n_jobs=-1,
+                                    random_state=seed))
 
     if name == "svr":
         return _scaled(SVR(C=10.0, epsilon=0.1, kernel="rbf"))

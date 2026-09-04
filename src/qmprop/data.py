@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 from rdkit import Chem, RDLogger
@@ -19,18 +20,39 @@ log = logging.getLogger(__name__)
 RDLogger.DisableLog("rdApp.*")  # RDKit is chatty about every parse failure
 
 
-def download(url: str, dest: Path) -> Path:
-    """Fetch the dataset once and cache it on disk."""
+def download(urls: str | Sequence[str], dest: Path) -> Path:
+    """Fetch the dataset once and cache it on disk.
+
+    Takes a list of mirrors and tries them in order. Dataset URLs rot --
+    the DeepChem S3 bucket that hosted ESOL for years now 404s -- and a
+    pipeline that dies at step one because of someone else's bucket
+    policy is a bad pipeline.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         log.info("using cached %s", dest.name)
         return dest
 
+    import urllib.error
     import urllib.request
 
-    log.info("downloading %s", url)
-    urllib.request.urlretrieve(url, dest)
-    return dest
+    if isinstance(urls, str):
+        urls = [urls]
+
+    failures = []
+    for url in urls:
+        try:
+            log.info("downloading %s", url)
+            urllib.request.urlretrieve(url, dest)
+            return dest
+        except (urllib.error.URLError, OSError) as exc:
+            log.warning("  failed: %s", exc)
+            failures.append(f"{url} -> {exc}")
+            dest.unlink(missing_ok=True)
+
+    raise RuntimeError(
+        "every mirror failed:\n  " + "\n  ".join(failures)
+    )
 
 
 def canonical_smiles(smiles: str) -> str | None:
@@ -58,7 +80,7 @@ def load_dataset(cfg: dict) -> pd.DataFrame:
     """
     ds = cfg["dataset"]
     raw_path = cfg["data_dir"] / "raw" / f"{ds['name']}.csv"
-    download(ds["url"], raw_path)
+    download(ds.get("urls") or ds["url"], raw_path)
 
     df = pd.read_csv(raw_path)
 

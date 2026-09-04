@@ -68,6 +68,39 @@ molecule — interrupt freely, rerunning resumes.
 
 ---
 
+## Measured baselines
+
+Actually run, not estimated. ESOL, 1117 molecules after deduplication
+(11 duplicates merged), 2048-bit ECFP4 + 199 RDKit descriptors,
+80/20 split, 224 test molecules.
+
+| model | scaffold RMSE | random RMSE | inflation |
+|---|---|---|---|
+| XGBoost | **0.900** (R² 0.808) | 0.595 (R² 0.926) | **+51%** |
+| Random forest | 0.909 (R² 0.804) | 0.621 (R² 0.920) | +46% |
+| Ridge (RidgeCV) | 1.072 (R² 0.728) | 1.145 (R² 0.728) | — |
+| MLP | 1.311 (R² 0.593) | 0.924 (R² 0.823) | +42% |
+
+Two things fall out of this table.
+
+**The random split inflates scores by roughly half an RMSE unit.** If you
+read a solubility paper reporting ~0.6 RMSE on ESOL without saying how it
+split, that is very likely this artifact rather than a better model.
+
+**XGBoost beats the neural network, decisively.** 0.900 against 1.311 on
+the honest split — which is the Ch 3 versus Ch 4 comparison the book sets
+up but does not close. At ~1100 molecules there is not enough data for the
+network to earn its capacity. This is the single most useful thing to
+know before spending a week on Ch 4.
+
+A footnote on the ridge row: with a fixed `alpha=1.0` it scored RMSE 2.141
+and **R² −0.087** — worse than predicting the mean. At 2247 features on
+893 samples a fixed penalty is badly under-regularized. `models.py` uses
+`RidgeCV`/`LassoCV`/`ElasticNetCV` so the linear arm is a real baseline
+rather than a strawman.
+
+---
+
 ## What the ablation actually compares
 
 Five arms, all scored on **exactly the same molecules and the same
@@ -92,7 +125,8 @@ floor is "no measurable effect", not a win.** Report it that way.
 
 ### What to expect
 
-Genuinely uncertain, which is the point. Plausible outcomes:
+The QM arm has not been run at scale yet — that is the open question and
+the reason the project exists. Plausible outcomes:
 
 - **QM adds little.** Likely for solubility — it is dominated by polarity
   and H-bonding, which TPSA and LogP already capture. A null result here
