@@ -26,6 +26,51 @@ MODULES = ["__init__.py", "config.py", "data.py", "features.py",
            "explain.py", "external.py"]
 
 
+SMOKE = r"""
+import os, sys
+os.environ["QMPROP_NO_LAUNCH"] = "1"
+sys.path.insert(0, ".")
+import numpy as np
+import app
+
+# A normal query must work, and must not silently return an error card.
+_, md, _ = app.predict("aspirin")
+assert "Predicted log S" in md, f"normal query failed: {md[:200]}"
+
+# The regression this smoke test exists for: RDKit's Ipc reaches 1e54 on
+# large molecules, which is finite in float64 and inf in float32. A stale
+# features.py shipped that bug to production once, where it surfaced as
+# an xgboost "Check failed: valid" on any large input.
+big = ".".join(["c1ccc2c(c1)ccc1c2cccc1"] * 12)
+_, md, _ = app.predict(big)
+assert "Predicted log S" in md, f"large molecule failed: {md[:200]}"
+
+# And the domain warning must still fire for chemistry it has not seen.
+_, md, _ = app.predict("table salt")
+assert "applicability domain" in md, "domain warning missing"
+print("smoke: normal, oversized and out-of-domain queries all OK")
+"""
+
+
+def smoke_test() -> None:
+    """Load the built app and run three queries before anything ships.
+
+    Building the Space copies modules from src/; nothing guarantees those
+    copies are current or that the app still imports. This has already
+    caught one production bug the hard way, so it now runs every build.
+    """
+    print("\nrunning smoke test against the built app...")
+    result = subprocess.run(
+        [sys.executable, "-c", SMOKE], cwd=BUILD,
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(result.stdout[-2000:])
+        print(result.stderr[-3000:])
+        raise SystemExit("smoke test FAILED -- not shipping this build")
+    print("  " + result.stdout.strip().splitlines()[-1])
+
+
 def main() -> None:
     sys.path.insert(0, str(ROOT / "src"))
 
@@ -74,6 +119,13 @@ def main() -> None:
 
     # Testing the build locally leaves __pycache__ behind; bytecode from
     # this machine's interpreter is useless (and wrong) on the Space's.
+    for pc in BUILD.rglob("__pycache__"):
+        shutil.rmtree(pc, ignore_errors=True)
+
+    smoke_test()
+
+    # The smoke run leaves fresh bytecode behind; clear it again so the
+    # Space never receives .pyc files built by this machine's interpreter.
     for pc in BUILD.rglob("__pycache__"):
         shutil.rmtree(pc, ignore_errors=True)
 
